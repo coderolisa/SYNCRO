@@ -1,5 +1,18 @@
 "use client"
-import { LogOut, Bell, AlertCircle, Key, Plus, Eye, EyeOff, Trash2, Mail, DollarSign } from "lucide-react"
+import {
+  LogOut,
+  Bell,
+  AlertCircle,
+  Key,
+  Plus,
+  Eye,
+  EyeOff,
+  Trash2,
+  Mail,
+  DollarSign,
+  Users,
+  Building2,
+} from "lucide-react"
 import { useState } from "react"
 import { type Currency, CURRENCY_NAMES, CURRENCY_SYMBOLS } from "@/lib/currency-utils"
 
@@ -11,6 +24,8 @@ export default function SettingsPage({
   darkMode,
   currency,
   onCurrencyChange,
+  accountType = "individual",
+  onUpgradeToTeam,
 }) {
   const [alertThreshold, setAlertThreshold] = useState(80)
   const [emailAlerts, setEmailAlerts] = useState(true)
@@ -23,6 +38,13 @@ export default function SettingsPage({
     { id: 2, tool: "Midjourney", key: "mj-...xyz789", visible: false, lastUsed: "1 day ago" },
   ])
 
+  const [showTeamUpgrade, setShowTeamUpgrade] = useState(false)
+  const [teamSetup, setTeamSetup] = useState({
+    workspaceName: "",
+    workDomain: "",
+    inviteEmails: [""],
+  })
+
   const [showAddEmail, setShowAddEmail] = useState(false)
   const [emailAccounts, setEmailAccounts] = useState([
     {
@@ -33,6 +55,8 @@ export default function SettingsPage({
       connectedAt: "2024-01-15",
       lastScanned: "2 hours ago",
       subscriptionCount: 8,
+      isWorkEmail: false,
+      domain: "example.com",
     },
     {
       id: 2,
@@ -42,6 +66,8 @@ export default function SettingsPage({
       connectedAt: "2024-02-01",
       lastScanned: "1 day ago",
       subscriptionCount: 5,
+      isWorkEmail: true,
+      domain: "company.com",
     },
   ])
 
@@ -76,16 +102,22 @@ export default function SettingsPage({
     setShowAddEmail(false)
     // Simulate adding a new email
     setTimeout(() => {
+      const newEmail = "new.email@example.com"
+      const domain = newEmail.split("@")[1]
+      const isWorkEmail = !["gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com"].includes(domain)
+
       setEmailAccounts([
         ...emailAccounts,
         {
           id: Math.max(...emailAccounts.map((e) => e.id), 0) + 1,
-          email: "new.email@example.com",
+          email: newEmail,
           provider: "gmail",
           isPrimary: false,
           connectedAt: new Date().toISOString().split("T")[0],
           lastScanned: "Just now",
           subscriptionCount: 0,
+          isWorkEmail,
+          domain,
         },
       ])
     }, 1000)
@@ -136,6 +168,48 @@ export default function SettingsPage({
     setEmailAccounts(emailAccounts.map((e) => (e.id === id ? { ...e, lastScanned: "Just now" } : e)))
   }
 
+  const handleUpgradeToTeam = () => {
+    if (!teamSetup.workspaceName || !teamSetup.workDomain) {
+      alert("Please fill in workspace name and work domain")
+      return
+    }
+
+    const workspaceData = {
+      name: teamSetup.workspaceName,
+      domain: teamSetup.workDomain,
+      invitedEmails: teamSetup.inviteEmails.filter((e) => e.trim()),
+      createdAt: new Date().toISOString(),
+    }
+
+    onUpgradeToTeam?.(workspaceData)
+    setShowTeamUpgrade(false)
+  }
+
+  const handleAddInviteEmail = () => {
+    setTeamSetup({
+      ...teamSetup,
+      inviteEmails: [...teamSetup.inviteEmails, ""],
+    })
+  }
+
+  const handleRemoveInviteEmail = (index) => {
+    setTeamSetup({
+      ...teamSetup,
+      inviteEmails: teamSetup.inviteEmails.filter((_, i) => i !== index),
+    })
+  }
+
+  const handleInviteEmailChange = (index, value) => {
+    const newInvites = [...teamSetup.inviteEmails]
+    newInvites[index] = value
+    setTeamSetup({
+      ...teamSetup,
+      inviteEmails: newInvites,
+    })
+  }
+
+  const workDomains = [...new Set(emailAccounts.filter((e) => e.isWorkEmail).map((e) => e.domain))]
+
   return (
     <div className="max-w-2xl space-y-6">
       {/* Plan Information */}
@@ -147,19 +221,60 @@ export default function SettingsPage({
             <p className={`text-2xl font-bold capitalize ${darkMode ? "text-white" : "text-gray-900"}`}>
               {currentPlan} Plan
             </p>
+            <p className={`text-sm mt-1 ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+              Account Type: <span className="font-medium capitalize">{accountType}</span>
+            </p>
           </div>
-          {currentPlan === "free" && (
-            <button
-              onClick={onUpgrade}
-              className={`px-6 py-2 rounded-lg font-medium transition-colors ${
-                darkMode ? "bg-white text-black hover:bg-gray-100" : "bg-black text-white hover:bg-gray-800"
-              }`}
-            >
-              Upgrade Plan
-            </button>
-          )}
+          <div className="flex flex-col gap-2">
+            {currentPlan === "free" && (
+              <button
+                onClick={onUpgrade}
+                className={`px-6 py-2 rounded-lg font-medium transition-colors ${
+                  darkMode ? "bg-white text-black hover:bg-gray-100" : "bg-black text-white hover:bg-gray-800"
+                }`}
+              >
+                Upgrade Plan
+              </button>
+            )}
+            {accountType === "individual" && (
+              <button
+                onClick={() => setShowTeamUpgrade(true)}
+                className={`px-6 py-2 rounded-lg font-medium transition-colors flex items-center gap-2 ${
+                  darkMode
+                    ? "bg-[#007A5C] text-white hover:bg-[#007A5C]/90"
+                    : "bg-[#007A5C] text-white hover:bg-[#007A5C]/90"
+                }`}
+              >
+                <Users className="w-4 h-4" />
+                Upgrade to Team
+              </button>
+            )}
+          </div>
         </div>
       </div>
+
+      {workDomains.length > 0 && accountType === "individual" && (
+        <div
+          className={`border rounded-xl p-6 ${darkMode ? "bg-[#007A5C]/10 border-[#007A5C]/30" : "bg-green-50 border-green-200"}`}
+        >
+          <div className="flex items-start gap-3">
+            <Building2 className={`w-5 h-5 mt-0.5 ${darkMode ? "text-[#007A5C]" : "text-green-700"}`} />
+            <div className="flex-1">
+              <h4 className={`font-semibold mb-1 ${darkMode ? "text-white" : "text-gray-900"}`}>Work Email Detected</h4>
+              <p className={`text-sm mb-3 ${darkMode ? "text-gray-300" : "text-gray-700"}`}>
+                We detected you're using a work email ({workDomains.join(", ")}). Upgrade to a Team account to
+                collaborate with colleagues and manage team subscriptions.
+              </p>
+              <button
+                onClick={() => setShowTeamUpgrade(true)}
+                className={`text-sm font-medium ${darkMode ? "text-[#007A5C]" : "text-green-700"} hover:underline`}
+              >
+                Learn more about Team accounts →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Currency & Localization */}
       <div className={`border rounded-xl p-6 ${darkMode ? "bg-gray-900 border-gray-800" : "bg-white border-gray-200"}`}>
@@ -268,6 +383,13 @@ export default function SettingsPage({
                         Primary
                       </span>
                     )}
+                    {account.isWorkEmail && (
+                      <span
+                        className={`px-2 py-0.5 text-xs font-medium rounded ${darkMode ? "bg-[#007A5C] text-white" : "bg-green-100 text-green-700"}`}
+                      >
+                        Work
+                      </span>
+                    )}
                   </div>
                   <div className={`text-sm space-y-1 ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
                     <p>
@@ -275,6 +397,12 @@ export default function SettingsPage({
                     </p>
                     <p>Last scanned: {account.lastScanned}</p>
                     <p>Connected: {new Date(account.connectedAt).toLocaleDateString()}</p>
+                    {account.isWorkEmail && (
+                      <p className="flex items-center gap-1">
+                        <Building2 className="w-3 h-3" />
+                        Domain: {account.domain}
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="flex flex-col gap-2">
@@ -570,6 +698,177 @@ export default function SettingsPage({
           ))}
         </div>
       </div>
+
+      {showTeamUpgrade && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div
+            className={`${darkMode ? "bg-gray-900" : "bg-white"} rounded-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto`}
+          >
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-12 h-12 rounded-full bg-[#007A5C] flex items-center justify-center">
+                <Users className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h3 className={`text-2xl font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>
+                  Upgrade to Team Account
+                </h3>
+                <p className={`text-sm ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                  Collaborate with your team and manage subscriptions together
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-6">
+              {/* Workspace Setup */}
+              <div>
+                <h4 className={`font-semibold mb-4 ${darkMode ? "text-white" : "text-gray-900"}`}>Workspace Setup</h4>
+                <div className="space-y-4">
+                  <div>
+                    <label className={`block text-sm font-medium mb-2 ${darkMode ? "text-gray-300" : "text-gray-700"}`}>
+                      Workspace Name
+                    </label>
+                    <input
+                      type="text"
+                      value={teamSetup.workspaceName}
+                      onChange={(e) => setTeamSetup({ ...teamSetup, workspaceName: e.target.value })}
+                      placeholder="e.g., Acme Inc, Marketing Team"
+                      className={`w-full px-4 py-2 border rounded-lg ${
+                        darkMode ? "bg-gray-800 border-gray-700 text-white" : "bg-white border-gray-300 text-gray-900"
+                      }`}
+                    />
+                  </div>
+
+                  <div>
+                    <label className={`block text-sm font-medium mb-2 ${darkMode ? "text-gray-300" : "text-gray-700"}`}>
+                      Work Domain
+                    </label>
+                    <input
+                      type="text"
+                      value={teamSetup.workDomain}
+                      onChange={(e) => setTeamSetup({ ...teamSetup, workDomain: e.target.value })}
+                      placeholder="e.g., company.com"
+                      className={`w-full px-4 py-2 border rounded-lg ${
+                        darkMode ? "bg-gray-800 border-gray-700 text-white" : "bg-white border-gray-300 text-gray-900"
+                      }`}
+                    />
+                    <p className={`text-xs mt-1 ${darkMode ? "text-gray-400" : "text-gray-500"}`}>
+                      Team members with this domain will be automatically suggested
+                    </p>
+                    {workDomains.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <p className={`text-xs ${darkMode ? "text-gray-400" : "text-gray-600"}`}>Detected domains:</p>
+                        {workDomains.map((domain) => (
+                          <button
+                            key={domain}
+                            onClick={() => setTeamSetup({ ...teamSetup, workDomain: domain })}
+                            className={`text-xs px-2 py-1 rounded ${
+                              darkMode
+                                ? "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                            }`}
+                          >
+                            {domain}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Invite Team Members */}
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className={`font-semibold ${darkMode ? "text-white" : "text-gray-900"}`}>
+                    Invite Team Members (Optional)
+                  </h4>
+                  <button
+                    onClick={handleAddInviteEmail}
+                    className={`text-sm flex items-center gap-1 ${darkMode ? "text-[#007A5C]" : "text-[#007A5C]"} hover:underline`}
+                  >
+                    <Plus className="w-4 h-4" />
+                    Add Another
+                  </button>
+                </div>
+                <div className="space-y-3">
+                  {teamSetup.inviteEmails.map((email, index) => (
+                    <div key={index} className="flex gap-2">
+                      <input
+                        type="email"
+                        value={email}
+                        onChange={(e) => handleInviteEmailChange(index, e.target.value)}
+                        placeholder={`teammate@${teamSetup.workDomain || "company.com"}`}
+                        className={`flex-1 px-4 py-2 border rounded-lg ${
+                          darkMode ? "bg-gray-800 border-gray-700 text-white" : "bg-white border-gray-300 text-gray-900"
+                        }`}
+                      />
+                      {teamSetup.inviteEmails.length > 1 && (
+                        <button
+                          onClick={() => handleRemoveInviteEmail(index)}
+                          className={`px-3 py-2 rounded-lg ${
+                            darkMode ? "bg-gray-700 hover:bg-gray-600" : "bg-gray-200 hover:bg-gray-300"
+                          }`}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <p className={`text-xs mt-2 ${darkMode ? "text-gray-400" : "text-gray-500"}`}>
+                  You can invite more team members later from the Teams page
+                </p>
+              </div>
+
+              {/* Benefits */}
+              <div className={`p-4 rounded-lg ${darkMode ? "bg-gray-800" : "bg-gray-50"}`}>
+                <h4 className={`font-semibold mb-3 ${darkMode ? "text-white" : "text-gray-900"}`}>
+                  Team Account Benefits
+                </h4>
+                <ul className={`space-y-2 text-sm ${darkMode ? "text-gray-300" : "text-gray-700"}`}>
+                  <li className="flex items-start gap-2">
+                    <span className="text-[#007A5C] mt-0.5">✓</span>
+                    <span>Collaborate with team members on subscription management</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-[#007A5C] mt-0.5">✓</span>
+                    <span>Track team spending and set department budgets</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-[#007A5C] mt-0.5">✓</span>
+                    <span>Role-based access control (Admin, Manager, Member, Viewer)</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-[#007A5C] mt-0.5">✓</span>
+                    <span>Automatic discovery of team members by work domain</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-[#007A5C] mt-0.5">✓</span>
+                    <span>Centralized billing and payment management</span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => setShowTeamUpgrade(false)}
+                className={`flex-1 px-4 py-2 rounded-lg font-medium transition-colors ${
+                  darkMode ? "bg-gray-700 hover:bg-gray-600 text-white" : "bg-gray-200 hover:bg-gray-300 text-gray-900"
+                }`}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleUpgradeToTeam}
+                className="flex-1 px-4 py-2 bg-[#007A5C] text-white rounded-lg font-medium hover:bg-[#007A5C]/90 transition-colors"
+              >
+                Create Team Workspace
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Danger Zone */}
       <div

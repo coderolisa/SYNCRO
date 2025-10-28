@@ -5,12 +5,14 @@ This guide provides step-by-step instructions for integrating external APIs with
 ## Table of Contents
 
 1. [Gmail API Integration](#gmail-api-integration)
-2. [Stripe Payment Processing](#stripe-payment-processing)
-3. [Google Calendar Integration](#google-calendar-integration)
-4. [Slack Notifications](#slack-notifications)
-5. [Plaid Bank Integration](#plaid-bank-integration)
-6. [Webhook Setup](#webhook-setup)
-7. [AI API Usage Tracking](#ai-api-usage-tracking)
+2. [Microsoft 365 / Outlook Integration](#microsoft-365--outlook-integration)
+3. [IMAP Integration (Universal Email Support)](#imap-integration-universal-email-support)
+4. [Email Forwarding (Simplest Option)](#email-forwarding-simplest-option)
+5. [Stripe Payment Processing](#stripe-payment-processing)
+6. [Google Calendar Integration](#google-calendar-integration)
+7. [Slack Notifications](#slack-notifications)
+8. [Webhook Setup](#webhook-setup)
+9. [AI API Usage Tracking](#ai-api-usage-tracking)
 
 ---
 
@@ -206,6 +208,553 @@ function parseEmailForSubscription(email: any) {
 
   return null
 }
+\`\`\`
+
+---
+
+## Microsoft 365 / Outlook Integration
+
+Enable automatic subscription detection for Microsoft 365 and Outlook work emails.
+
+### Prerequisites
+
+- Microsoft Azure account
+- Microsoft Graph API access
+- OAuth 2.0 credentials
+
+### Step 1: Register App in Azure
+
+1. Go to [Azure Portal](https://portal.azure.com/)
+2. Navigate to "Azure Active Directory" > "App registrations"
+3. Click "New registration"
+4. Name your app (e.g., "SubSync AI")
+5. Set redirect URI:
+   - Type: Web
+   - URI: `https://yourdomain.com/api/auth/microsoft/callback`
+6. Click "Register"
+
+### Step 2: Configure API Permissions
+
+1. In your app, go to "API permissions"
+2. Click "Add a permission" > "Microsoft Graph"
+3. Select "Delegated permissions"
+4. Add these permissions:
+   - `Mail.Read` - Read user mail
+   - `User.Read` - Read user profile
+   - `offline_access` - Maintain access to data
+5. Click "Grant admin consent"
+
+### Step 3: Create Client Secret
+
+1. Go to "Certificates & secrets"
+2. Click "New client secret"
+3. Add description and expiration
+4. Copy the secret value (you won't see it again)
+
+### Step 4: Add Environment Variables
+
+\`\`\`env
+MICROSOFT_CLIENT_ID=your_application_id
+MICROSOFT_CLIENT_SECRET=your_client_secret
+MICROSOFT_TENANT_ID=common  # or your specific tenant ID
+MICROSOFT_REDIRECT_URI=https://yourdomain.com/api/auth/microsoft/callback
+\`\`\`
+
+### Step 5: Implement OAuth Flow
+
+Create `app/api/auth/microsoft/route.ts`:
+
+\`\`\`typescript
+import { NextResponse } from 'next/server'
+
+export async function GET() {
+  const params = new URLSearchParams({
+    client_id: process.env.MICROSOFT_CLIENT_ID!,
+    response_type: 'code',
+    redirect_uri: process.env.MICROSOFT_REDIRECT_URI!,
+    response_mode: 'query',
+    scope: 'offline_access User.Read Mail.Read',
+  })
+
+  const authUrl = `https://login.microsoftonline.com/${process.env.MICROSOFT_TENANT_ID}/oauth2/v2.0/authorize?${params}`
+
+  return NextResponse.redirect(authUrl)
+}
+\`\`\`
+
+Create `app/api/auth/microsoft/callback/route.ts`:
+
+\`\`\`typescript
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+
+export async function GET(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams
+  const code = searchParams.get('code')
+
+  if (!code) {
+    return NextResponse.redirect('/dashboard?error=no_code')
+  }
+
+  try {
+    // Exchange code for tokens
+    const tokenResponse = await fetch(
+      `https://login.microsoftonline.com/${process.env.MICROSOFT_TENANT_ID}/oauth2/v2.0/token`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: process.env.MICROSOFT_CLIENT_ID!,
+          client_secret: process.env.MICROSOFT_CLIENT_SECRET!,
+          code,
+          redirect_uri: process.env.MICROSOFT_REDIRECT_URI!,
+          grant_type: 'authorization_code',
+        }),
+      }
+    )
+
+    const tokens = await tokenResponse.json()
+
+    // Get user profile
+    const profileResponse = await fetch('https://graph.microsoft.com/v1.0/me', {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    })
+
+    const profile = await profileResponse.json()
+
+    // Save to database
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+
+    if (user) {
+      await supabase.from('email_accounts').insert({
+        user_id: user.id,
+        email: profile.mail || profile.userPrincipalName,
+        provider: 'microsoft',
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        token_expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
+        is_connected: true,
+      })
+    }
+
+    return NextResponse.redirect('/dashboard?microsoft=connected')
+  } catch (error) {
+    console.error('Microsoft OAuth error:', error)
+    return NextResponse.redirect('/dashboard?error=microsoft_auth_failed')
+  }
+}
+\`\`\`
+
+### Step 6: Scan Outlook Emails
+
+Create `lib/microsoft/scanner.ts`:
+
+\`\`\`typescript
+interface MicrosoftTokens {
+  access_token: string
+  refresh_token: string
+  expires_at: string
+}
+
+export async function scanOutlookEmails(tokens: MicrosoftTokens) {
+  // Refresh token if expired
+  if (new Date(tokens.expires_at) < new Date()) {
+    tokens = await refreshMicrosoftToken(tokens.refresh_token)
+  }
+
+  const subscriptions = []
+  const keywords = ['subscription', 'recurring', 'renewal', 'monthly charge']
+
+  for (const keyword of keywords) {
+    const response = await fetch(
+      `https://graph.microsoft.com/v1.0/me/messages?$filter=contains(subject,'${keyword}')&$top=50&$orderby=receivedDateTime desc`,
+      {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+      }
+    )
+
+    const data = await response.json()
+
+    for (const message of data.value || []) {
+      const subscription = parseEmailForSubscription(message)
+      if (subscription) {
+        subscriptions.push(subscription)
+      }
+    }
+  }
+
+  return subscriptions
+}
+
+async function refreshMicrosoftToken(refreshToken: string) {
+  const response = await fetch(
+    `https://login.microsoftonline.com/${process.env.MICROSOFT_TENANT_ID}/oauth2/v2.0/token`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: process.env.MICROSOFT_CLIENT_ID!,
+        client_secret: process.env.MICROSOFT_CLIENT_SECRET!,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token',
+      }),
+    }
+  )
+
+  const tokens = await response.json()
+
+  return {
+    access_token: tokens.access_token,
+    refresh_token: tokens.refresh_token,
+    expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
+  }
+}
+
+function parseEmailForSubscription(email: any) {
+  const subject = email.subject
+  const from = email.from?.emailAddress?.name || email.from?.emailAddress?.address
+
+  // Extract price
+  const priceMatch = subject?.match(/\$(\d+\.?\d*)/)?.[1]
+
+  if (priceMatch && from) {
+    return {
+      name: from,
+      price: parseFloat(priceMatch),
+      source: 'microsoft',
+      email_id: email.id,
+    }
+  }
+
+  return null
+}
+\`\`\`
+
+---
+
+## IMAP Integration (Universal Email Support)
+
+For custom email servers and providers that don't have OAuth APIs.
+
+### Prerequisites
+
+- Email server with IMAP enabled
+- User email credentials
+
+### Step 1: Install IMAP Library
+
+\`\`\`bash
+npm install imap mailparser
+npm install --save-dev @types/imap
+\`\`\`
+
+### Step 2: Add Environment Variables
+
+\`\`\`env
+# These will be stored per-user in the database
+# IMAP_HOST=imap.example.com
+# IMAP_PORT=993
+# IMAP_USER=user@example.com
+# IMAP_PASSWORD=encrypted_password
+\`\`\`
+
+### Step 3: Create IMAP Scanner
+
+Create `lib/imap/scanner.ts`:
+
+\`\`\`typescript
+import Imap from 'imap'
+import { simpleParser } from 'mailparser'
+
+interface ImapConfig {
+  host: string
+  port: number
+  user: string
+  password: string
+  tls: boolean
+}
+
+export async function scanImapEmails(config: ImapConfig): Promise<any[]> {
+  return new Promise((resolve, reject) => {
+    const imap = new Imap({
+      user: config.user,
+      password: config.password,
+      host: config.host,
+      port: config.port,
+      tls: config.tls,
+      tlsOptions: { rejectUnauthorized: false },
+    })
+
+    const subscriptions: any[] = []
+
+    imap.once('ready', () => {
+      imap.openBox('INBOX', true, (err, box) => {
+        if (err) {
+          reject(err)
+          return
+        }
+
+        // Search for subscription-related emails
+        const searchCriteria = [
+          'OR',
+          ['SUBJECT', 'subscription'],
+          ['SUBJECT', 'renewal'],
+          ['SUBJECT', 'recurring'],
+        ]
+
+        imap.search(searchCriteria, (err, results) => {
+          if (err) {
+            reject(err)
+            return
+          }
+
+          if (results.length === 0) {
+            imap.end()
+            resolve([])
+            return
+          }
+
+          const fetch = imap.fetch(results.slice(0, 50), {
+            bodies: '',
+            struct: true,
+          })
+
+          fetch.on('message', (msg) => {
+            msg.on('body', (stream) => {
+              simpleParser(stream, (err, parsed) => {
+                if (err) return
+
+                const subscription = parseEmailForSubscription({
+                  subject: parsed.subject,
+                  from: parsed.from?.text,
+                  text: parsed.text,
+                  html: parsed.html,
+                })
+
+                if (subscription) {
+                  subscriptions.push(subscription)
+                }
+              })
+            })
+          })
+
+          fetch.once('end', () => {
+            imap.end()
+            resolve(subscriptions)
+          })
+        })
+      })
+    })
+
+    imap.once('error', (err) => {
+      reject(err)
+    })
+
+    imap.connect()
+  })
+}
+
+function parseEmailForSubscription(email: any) {
+  const subject = email.subject || ''
+  const from = email.from || ''
+  const text = email.text || ''
+
+  // Extract price from subject or body
+  const priceMatch = (subject + text).match(/\$(\d+\.?\d*)/)?.[1]
+
+  if (priceMatch) {
+    return {
+      name: from.split('<')[0].trim(),
+      price: parseFloat(priceMatch),
+      source: 'imap',
+    }
+  }
+
+  return null
+}
+\`\`\`
+
+### Step 4: Secure Password Storage
+
+Create `lib/encryption/password.ts`:
+
+\`\`\`typescript
+import crypto from 'crypto'
+
+const ALGORITHM = 'aes-256-gcm'
+const KEY = Buffer.from(process.env.ENCRYPTION_KEY!, 'hex') // 32 bytes
+
+export function encryptPassword(password: string): string {
+  const iv = crypto.randomBytes(16)
+  const cipher = crypto.createCipheriv(ALGORITHM, KEY, iv)
+
+  let encrypted = cipher.update(password, 'utf8', 'hex')
+  encrypted += cipher.final('hex')
+
+  const authTag = cipher.getAuthTag()
+
+  return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`
+}
+
+export function decryptPassword(encryptedData: string): string {
+  const [ivHex, authTagHex, encrypted] = encryptedData.split(':')
+
+  const iv = Buffer.from(ivHex, 'hex')
+  const authTag = Buffer.from(authTagHex, 'hex')
+
+  const decipher = crypto.createDecipheriv(ALGORITHM, KEY, iv)
+  decipher.setAuthTag(authTag)
+
+  let decrypted = decipher.update(encrypted, 'hex', 'utf8')
+  decrypted += decipher.final('utf8')
+
+  return decrypted
+}
+\`\`\`
+
+### Step 5: Add IMAP Connection UI
+
+Create `app/api/email/connect-imap/route.ts`:
+
+\`\`\`typescript
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { encryptPassword } from '@/lib/encryption/password'
+import { scanImapEmails } from '@/lib/imap/scanner'
+
+export async function POST(request: NextRequest) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+
+  if (!user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  const { email, password, host, port, provider } = await request.json()
+
+  try {
+    // Test connection
+    await scanImapEmails({
+      host,
+      port: parseInt(port),
+      user: email,
+      password,
+      tls: true,
+    })
+
+    // Save encrypted credentials
+    const encryptedPassword = encryptPassword(password)
+
+    await supabase.from('email_accounts').insert({
+      user_id: user.id,
+      email,
+      provider: provider || 'imap',
+      imap_host: host,
+      imap_port: port,
+      imap_password: encryptedPassword,
+      is_connected: true,
+    })
+
+    return NextResponse.json({ success: true })
+  } catch (error) {
+    console.error('IMAP connection error:', error)
+    return NextResponse.json(
+      { error: 'Failed to connect to email server' },
+      { status: 500 }
+    )
+  }
+}
+\`\`\`
+
+---
+
+## Email Forwarding (Simplest Option)
+
+For users who don't want to connect their email accounts directly.
+
+### Step 1: Set Up Inbound Email Parsing
+
+Use a service like SendGrid Inbound Parse or create your own:
+
+\`\`\`env
+INBOUND_EMAIL_ADDRESS=subscriptions@yourdomain.com
+INBOUND_EMAIL_SECRET=random_secret_key
+\`\`\`
+
+### Step 2: Create Inbound Email Handler
+
+Create `app/api/email/inbound/route.ts`:
+
+\`\`\`typescript
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+
+export async function POST(request: NextRequest) {
+  const secret = request.headers.get('x-inbound-secret')
+
+  if (secret !== process.env.INBOUND_EMAIL_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  const formData = await request.formData()
+  const from = formData.get('from') as string
+  const subject = formData.get('subject') as string
+  const text = formData.get('text') as string
+
+  // Extract user email from forwarding address
+  // Format: user+userid@yourdomain.com
+  const to = formData.get('to') as string
+  const userIdMatch = to.match(/\+([^@]+)@/)
+  const userId = userIdMatch?.[1]
+
+  if (!userId) {
+    return NextResponse.json({ error: 'Invalid recipient' }, { status: 400 })
+  }
+
+  // Parse email for subscription info
+  const subscription = parseEmailForSubscription({ subject, from, text })
+
+  if (subscription) {
+    const supabase = await createClient()
+
+    await supabase.from('subscriptions').insert({
+      user_id: userId,
+      name: subscription.name,
+      price: subscription.price,
+      source: 'email_forward',
+      status: 'pending_review',
+    })
+  }
+
+  return NextResponse.json({ received: true })
+}
+
+function parseEmailForSubscription(email: any) {
+  // Same parsing logic as before
+  const priceMatch = (email.subject + email.text).match(/\$(\d+\.?\d*)/)?.[1]
+
+  if (priceMatch) {
+    return {
+      name: email.from.split('<')[0].trim(),
+      price: parseFloat(priceMatch),
+    }
+  }
+
+  return null
+}
+\`\`\`
+
+### Step 3: User Instructions
+
+Add to your UI:
+
+\`\`\`typescript
+const forwardingAddress = `subscriptions+${user.id}@yourdomain.com`
+
+// Display to user:
+// "Forward your subscription emails to: subscriptions+abc123@subsync.ai"
+// "We'll automatically detect and add them to your dashboard"
 \`\`\`
 
 ---
@@ -549,178 +1098,6 @@ export async function notifyPriceIncrease(subscription: any, oldPrice: number, n
 
 ---
 
-## Plaid Bank Integration
-
-Connect bank accounts to automatically detect subscription charges.
-
-### Prerequisites
-
-- Plaid account
-- Plaid API keys
-
-### Step 1: Sign Up for Plaid
-
-1. Go to [Plaid Dashboard](https://dashboard.plaid.com/)
-2. Sign up for an account
-3. Get your Client ID and Secret
-
-### Step 2: Add Environment Variables
-
-\`\`\`env
-PLAID_CLIENT_ID=your_client_id
-PLAID_SECRET=your_secret
-PLAID_ENV=sandbox  # or 'development' or 'production'
-\`\`\`
-
-### Step 3: Install Plaid SDK
-
-\`\`\`bash
-npm install plaid
-\`\`\`
-
-### Step 4: Create Link Token
-
-Create `app/api/plaid/create-link-token/route.ts`:
-
-\`\`\`typescript
-import { NextRequest, NextResponse } from 'next/server'
-import { Configuration, PlaidApi, PlaidEnvironments, Products, CountryCode } from 'plaid'
-import { createClient } from '@/lib/supabase/server'
-
-const configuration = new Configuration({
-  basePath: PlaidEnvironments[process.env.PLAID_ENV as keyof typeof PlaidEnvironments],
-  baseOptions: {
-    headers: {
-      'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID,
-      'PLAID-SECRET': process.env.PLAID_SECRET,
-    },
-  },
-})
-
-const plaidClient = new PlaidApi(configuration)
-
-export async function POST(request: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  try {
-    const response = await plaidClient.linkTokenCreate({
-      user: { client_user_id: user.id },
-      client_name: 'SubSync AI',
-      products: [Products.Transactions],
-      country_codes: [CountryCode.Us],
-      language: 'en',
-    })
-
-    return NextResponse.json({ link_token: response.data.link_token })
-  } catch (error) {
-    console.error('Plaid link token error:', error)
-    return NextResponse.json({ error: 'Failed to create link token' }, { status: 500 })
-  }
-}
-\`\`\`
-
-### Step 5: Exchange Public Token
-
-Create `app/api/plaid/exchange-token/route.ts`:
-
-\`\`\`typescript
-import { NextRequest, NextResponse } from 'next/server'
-import { Configuration, PlaidApi, PlaidEnvironments } from 'plaid'
-import { createClient } from '@/lib/supabase/server'
-
-const configuration = new Configuration({
-  basePath: PlaidEnvironments[process.env.PLAID_ENV as keyof typeof PlaidEnvironments],
-  baseOptions: {
-    headers: {
-      'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID,
-      'PLAID-SECRET': process.env.PLAID_SECRET,
-    },
-  },
-})
-
-const plaidClient = new PlaidApi(configuration)
-
-export async function POST(request: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const { public_token } = await request.json()
-
-  try {
-    const response = await plaidClient.itemPublicTokenExchange({
-      public_token,
-    })
-
-    const accessToken = response.data.access_token
-
-    // Save access token to database
-    await supabase.from('bank_connections').insert({
-      user_id: user.id,
-      access_token: accessToken,
-      item_id: response.data.item_id,
-    })
-
-    return NextResponse.json({ success: true })
-  } catch (error) {
-    console.error('Plaid token exchange error:', error)
-    return NextResponse.json({ error: 'Failed to exchange token' }, { status: 500 })
-  }
-}
-\`\`\`
-
-### Step 6: Fetch Transactions
-
-Create `lib/plaid/transactions.ts`:
-
-\`\`\`typescript
-import { Configuration, PlaidApi, PlaidEnvironments } from 'plaid'
-
-const configuration = new Configuration({
-  basePath: PlaidEnvironments[process.env.PLAID_ENV as keyof typeof PlaidEnvironments],
-  baseOptions: {
-    headers: {
-      'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID,
-      'PLAID-SECRET': process.env.PLAID_SECRET,
-    },
-  },
-})
-
-const plaidClient = new PlaidApi(configuration)
-
-export async function fetchTransactions(accessToken: string, startDate: string, endDate: string) {
-  try {
-    const response = await plaidClient.transactionsGet({
-      access_token: accessToken,
-      start_date: startDate,
-      end_date: endDate,
-    })
-
-    // Filter for recurring transactions
-    const recurringTransactions = response.data.transactions.filter((transaction) => {
-      // Look for subscription-related merchants
-      const subscriptionKeywords = ['netflix', 'spotify', 'adobe', 'microsoft', 'amazon prime']
-      return subscriptionKeywords.some((keyword) => transaction.name.toLowerCase().includes(keyword))
-    })
-
-    return recurringTransactions
-  } catch (error) {
-    console.error('Failed to fetch transactions:', error)
-    throw error
-  }
-}
-\`\`\`
-
----
-
 ## Webhook Setup
 
 Configure webhooks for external services to notify your app of events.
@@ -876,7 +1253,7 @@ export async function generateText(userId: string, prompt: string) {
 curl http://localhost:3000/api/auth/gmail
 
 # Test email scanning
-curl -X POST http://localhost:3000/api/gmail/scan \\
+curl -X POST http://localhost:3000/api/gmail/scan \
   -H "Authorization: Bearer YOUR_TOKEN"
 \`\`\`
 
@@ -886,11 +1263,13 @@ Use Stripe test cards:
 - Success: `4242 4242 4242 4242`
 - Decline: `4000 0000 0000 0002`
 
-### Plaid Testing
+### IMAP Testing
 
-Use Plaid sandbox credentials:
-- Username: `user_good`
-- Password: `pass_good`
+Use your IMAP server credentials for testing.
+
+### Microsoft 365 Testing
+
+Use your Microsoft 365 credentials for testing.
 
 ---
 
@@ -899,7 +1278,7 @@ Use Plaid sandbox credentials:
 ### Common Issues
 
 1. **OAuth redirect mismatch**
-   - Ensure redirect URIs match exactly in Google/Stripe console
+   - Ensure redirect URIs match exactly in Google/Stripe/Azure console
    - Check for trailing slashes
 
 2. **Webhook signature verification fails**

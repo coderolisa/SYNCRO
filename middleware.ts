@@ -1,8 +1,7 @@
-import { updateSession } from "@/lib/supabase/middleware"
 import type { NextRequest } from "next/server"
 import { NextResponse } from "next/server"
 
-// Security headers
+// Security headers only
 const securityHeaders = {
   "X-DNS-Prefetch-Control": "on",
   "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
@@ -14,8 +13,7 @@ const securityHeaders = {
 }
 
 export async function middleware(request: NextRequest) {
-  // Apply security headers
-  const response = await updateSession(request)
+  const response = NextResponse.next()
 
   Object.entries(securityHeaders).forEach(([key, value]) => {
     response.headers.set(key, value)
