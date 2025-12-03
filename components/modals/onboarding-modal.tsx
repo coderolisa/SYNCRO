@@ -1,11 +1,11 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { ArrowLeft, ArrowRight, CheckCircle2, Clock, Mail, Shield, Zap, Plus, X } from "lucide-react"
+import { ArrowLeft, ArrowRight, CheckCircle2, Clock, Mail, Zap, Plus, X } from "lucide-react"
 
 export default function OnboardingModal({ onClose, onModeSelect, darkMode = false }) {
   const [step, setStep] = useState(1)
-  const [connectionMethod, setConnectionMethod] = useState<"gmail" | "plaid" | "manual" | null>(null)
+  const [connectionMethod, setConnectionMethod] = useState<"gmail" | "manual" | null>(null)
   const [isScanning, setIsScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState({ emails: 0, subscriptions: 0, time: 0 })
   const [foundSubscriptions, setFoundSubscriptions] = useState<any[]>([])
@@ -101,7 +101,7 @@ export default function OnboardingModal({ onClose, onModeSelect, darkMode = fals
     if (step === 2 && connectionMethod === "gmail") {
       handleConnectGmail()
       setStep(3)
-    } else if (step === 2 && (connectionMethod === "plaid" || connectionMethod === "manual")) {
+    } else if (step === 2 && connectionMethod === "manual") {
       setStep(4)
     } else if (step < 5) {
       setStep(step + 1)
@@ -109,6 +109,9 @@ export default function OnboardingModal({ onClose, onModeSelect, darkMode = fals
   }
 
   const handleModeSelection = (mode: "individual" | "enterprise") => {
+    // Mark onboarding as completed
+    localStorage.setItem("onboarding_completed", "true")
+    localStorage.setItem("subsync_authenticated", "true")
     onModeSelect(mode)
     onClose()
   }
@@ -369,33 +372,6 @@ export default function OnboardingModal({ onClose, onModeSelect, darkMode = fals
                   <div className="flex items-center gap-1">
                     <Clock className="w-4 h-4" />
                     <span>2min Setup</span>
-                  </div>
-                </div>
-              </button>
-
-              <button
-                onClick={() => setConnectionMethod("plaid")}
-                className={`w-full p-6 rounded-lg border-2 transition-all text-left ${
-                  connectionMethod === "plaid"
-                    ? "border-gray-900 bg-white"
-                    : "border-gray-300 bg-white hover:border-gray-400"
-                }`}
-              >
-                <div className="flex items-start justify-between mb-3">
-                  <h4 className="text-lg font-semibold text-gray-900">Connect Bank via Plaid</h4>
-                  <Shield className="w-6 h-6 text-gray-600" />
-                </div>
-                <p className="text-sm text-gray-600 mb-4">
-                  Securely connect your bank account to track all subscription-related transactions automatically.
-                </p>
-                <div className="flex items-center gap-4 text-xs text-gray-500">
-                  <div className="flex items-center gap-1">
-                    <Shield className="w-4 h-4" />
-                    <span>Bank-grade security</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Clock className="w-4 h-4" />
-                    <span>Read-only access</span>
                   </div>
                 </div>
               </button>

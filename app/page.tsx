@@ -19,6 +19,7 @@ import {
 import WelcomePage from "@/components/pages/welcome"
 import EnterpriseSetup from "@/components/pages/enterprise-setup"
 import DashboardPage from "@/components/pages/dashboard"
+import LandingAuth from "@/components/pages/landing-auth"
 import SubscriptionsPage from "@/components/pages/subscriptions"
 import AnalyticsPage from "@/components/pages/analytics"
 import IntegrationsPage from "@/components/pages/integrations"
@@ -55,7 +56,11 @@ export default function SubsyncApp() {
   const [accountType, setAccountType] = useState<"individual" | "team" | "enterprise">("individual")
   const [workspace, setWorkspace] = useState<any>(null)
   const [activeView, setActiveView] = useState("dashboard")
-  const [showOnboarding, setShowOnboarding] = useState(true)
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [showLandingAuth, setShowLandingAuth] = useState(true)
+  const [showOnboarding, setShowOnboarding] = useState(false)
+  const [authError, setAuthError] = useState<string | null>(null)
+  const [authLoading, setAuthLoading] = useState(false)
   const [showAddSubscription, setShowAddSubscription] = useState(false)
   const [showUpgradePlan, setShowUpgradePlan] = useState(false)
   const [showNotifications, setShowNotifications] = useState(false)
@@ -656,6 +661,63 @@ export default function SubsyncApp() {
   useEffect(() => {
     checkRenewalReminders()
   }, [subscriptions])
+
+  // Check authentication status on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const authStatus = localStorage.getItem("subsync_authenticated")
+        if (authStatus === "true") {
+          setIsAuthenticated(true)
+          setShowLandingAuth(false)
+          // Check if user has completed onboarding
+          const onboardingCompleted = localStorage.getItem("onboarding_completed")
+          if (!onboardingCompleted) {
+            setShowOnboarding(true)
+          }
+        }
+      } catch (error) {
+        console.error("Error checking auth:", error)
+      }
+    }
+    checkAuth()
+  }, [])
+
+  const handleLogin = async (email: string, password: string) => {
+    setAuthLoading(true)
+    setAuthError(null)
+    try {
+      // Simulate API call - replace with actual Supabase auth
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      
+      // For demo purposes, accept any email/password
+      // In production, use: const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+      
+      localStorage.setItem("subsync_authenticated", "true")
+      localStorage.setItem("subsync_user_email", email)
+      setIsAuthenticated(true)
+      setShowLandingAuth(false)
+      setShowOnboarding(false) // Skip onboarding for existing users
+      setMode("individual") // Go directly to dashboard, not welcome page
+      setAccountType("individual")
+      
+      showToast({
+        title: "Welcome back!",
+        description: "You've been signed in successfully.",
+        variant: "success",
+      })
+    } catch (error: unknown) {
+      setAuthError(error instanceof Error ? error.message : "Failed to sign in. Please try again.")
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
+  const handleSignup = () => {
+    setShowLandingAuth(false)
+    setShowOnboarding(true)
+    setIsAuthenticated(true) // Set authenticated so they can proceed after onboarding
+  }
 
   const budgetAlert = checkBudgetAlerts()
 
@@ -1616,10 +1678,27 @@ export default function SubsyncApp() {
     }
   }
 
+  // Show landing/auth page if not authenticated
+  if (showLandingAuth) {
+    return (
+      <LandingAuth
+        onLogin={handleLogin}
+        onSignup={handleSignup}
+        darkMode={darkMode}
+        isLoading={authLoading}
+        error={authError}
+      />
+    )
+  }
+
+  // Show onboarding for new signups
   if (showOnboarding) {
     return (
       <OnboardingModal
-        onClose={() => setShowOnboarding(false)}
+        onClose={() => {
+          setShowOnboarding(false)
+          localStorage.setItem("onboarding_completed", "true")
+        }}
         onModeSelect={handleModeSelect}
         darkMode={darkMode}
         emailAccounts={emailAccounts}
