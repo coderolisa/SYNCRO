@@ -1,0 +1,40 @@
+import axios from "axios";
+
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE || "https://backend-ai-sub.onrender.com";
+
+const api = axios.create({
+  baseURL: API_BASE,
+  withCredentials: true,
+  headers: {
+    "Content-Type": "application/json",
+  },
+});
+
+// Simple wrappers to normalize responses and errors
+export async function apiGet(path: string, config = {}) {
+  const res = await api.get(path, config as any);
+  return res.data;
+}
+
+export async function apiPost(path: string, data?: any, config = {}) {
+  const res = await api.post(path, data, config as any);
+  return res.data;
+}
+
+export async function apiPut(path: string, data?: any, config = {}) {
+  const res = await api.put(path, data, config as any);
+  return res.data;
+}
+
+export async function apiPatch(path: string, data?: any, config = {}) {
+  const res = await api.patch(path, data, config as any);
+  return res.data;
+}
+
+export async function apiDelete(path: string, config = {}) {
+  const res = await api.delete(path, config as any);
+  return res.data;
+}
+
+export default api;
