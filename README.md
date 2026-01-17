@@ -1,36 +1,37 @@
-## Self-Custodial Subscription Manager**
-A decentralized subscription management platform that enables users to control recurring payments directly from their own wallet. Users can track, approve, pause, and fund subscriptions like Netflix, YouTube, Claude, Midjourney, and more, without giving control of their payment method to any centralized service. Payments are executed via a crypto-card-funded agent to handle Web2 billing.
+## Self-Custodial Subscription Manager (Built on Stellar)
 
-## ✨ Key Features**
-Full self-custody: users maintain complete control of funds
-Unified dashboard for managing all subscriptions
-AI-powered agent to automate payment approvals and execution
-Crypto-to-card settlement layer for legacy services
-Price-change protection with spending caps
-Push notifications for approvals and reminders
-Manual subscription entry for unsupported platforms
+A decentralized subscription management platform built on the Stellar blockchain that enables users to control recurring payments directly from their own wallet. Users can track, approve, pause, and fund subscriptions such as Netflix, YouTube, Claude, Midjourney, and more—without handing over control of their payment method to any centralized service. Payments are executed via a crypto-card–funded agent to handle Web2 billing.
+
+## ✨ Key Features
+
+Full self-custody: Users retain complete control of funds via Stellar wallets
+
+Unified dashboard: Manage all subscriptions in one place
+
+AI-powered agent: Automates approval requests and payment execution
+
+Crypto-to-card settlement layer: Bridges Stellar assets to legacy Web2 services
+
+Price-change protection: Spending caps and approval thresholds enforced on-chain
+
+Push notifications: Real-time approvals, renewals, and balance alerts
+
+Manual subscription entry: Support for platforms without native integrations
 
 ## High-Level Workflow
-User connects a Web3 wallet.
+
+User connects a Stellar-compatible Web3 wallet.
+
 User adds subscriptions (auto-detected or manually entered).
-User funds a Subscription Vault with USDC or stablecoins.
+
+User funds a Subscription Vault with USDC or other Stellar-native stable assets.
+
 When a bill is due:
-System sends approval request
-If approved, the agent loads exact funds to a crypto card and pays the provider
-Or uses x402 to complete an on-chain settlement flow
-Dashboard updates balance, renewal date, and spend insights.
 
-**[https://vercel.com/calebuxs-projects/v0-ai-subscription-dashboard](https://vercel.com/calebuxs-projects/v0-ai-subscription-dashboard)**
+The system sends an approval request.
 
-## Build your app
+Upon approval, the agent loads the exact amount onto a crypto card and pays the provider, or
 
-Continue building your app on:
+Executes an on-chain settlement using x402-compatible payment flows where supported.
 
-**[https://v0.app/chat/projects/XC0a1rPyUqt](https://v0.app/chat/projects/XC0a1rPyUqt)**
-
-## How It Works
-
-1. Create and modify your project using [v0.app](https://v0.app)
-2. Deploy your chats from the v0 interface
-3. Changes are automatically pushed to this repository
-4. Vercel deploys the latest version from this repository
+The dashboard updates balances, renewal dates, and spending insights in real time.
