@@ -1,8 +1,8 @@
-##Synchro — Self-Custodial Subscription Manager (MVP)
+## Synchro — Self-Custodial Subscription Manager (MVP)
 
 Synchro is a decentralized, self-custodial subscription management platform that empowers users to take full control of their recurring payments while using crypto. This MVP focuses on gift card–compatible subscriptions and optional email-based subscription detection, pending future automation with non-custodial card issuance on Stellar.
 
-##Key Goals
+## Key Goals
 
 Prevent unwanted recurring charges: Users only pay when they choose.
 
@@ -12,7 +12,7 @@ Subscription awareness: Synchro sends reminders and provides direct cancel links
 
 Scalable roadmap: MVP will later evolve into fully automated payments once non-custodial Stellar card issuance is available.
 
-##Phase 1 (MVP) Workflow
+## Phase 1 (MVP) Workflow
 Supported Payment Method
 
 Crypto → Atomic Wallet → Gift Card (Visa, Amazon, Google Play, Steam)
@@ -29,7 +29,7 @@ Optionally allows Synchro to fetch subscription-related emails.
 
 Notifications are sent 3 days before each subscription renewal (daily until payment).
 
-Each reminder shows:
+# Each reminder shows:
 
 Subscription name
 
@@ -73,7 +73,7 @@ Steam subscriptions / in-app purchases
 
 Only subscriptions compatible with gift cards are included in MVP.
 
-##Future Roadmap
+## Future Roadmap
 
 Phase 1 MVP is designed as a manual + semi-automated solution:
 
@@ -87,7 +87,7 @@ Fully automated recurring payment control
 
 Still retains non-custodial principles — users own their funds at all times
 
-##Design Principles
+## Design Principles
 
 Non-Custodial: Users remain in full control of their crypto and payments.
 
@@ -97,7 +97,7 @@ Low-Risk MVP: Gift card–based workflow avoids complex integration while demons
 
 Scalable: Phase 1 is a foundation for automated Stellar card integration.
 
-##MVP Benefits
+## MVP Benefits
 
 Users avoid accidental charges or unwanted recurring payments
 
@@ -109,7 +109,7 @@ Works globally where gift cards are supported
 
 Prepares the ecosystem for fully automated crypto-to-fiat subscription payments in future versions
 
-##Disclaimer
+## Disclaimer
 
 Synchro MVP does not execute payments on behalf of users.
 Users are responsible for:
