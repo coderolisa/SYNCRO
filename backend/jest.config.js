@@ -8,4 +8,7 @@ module.exports = {
     resetMocks: true,
     restoreMocks: true,
     setupFiles: ['<rootDir>/tests/setup.ts'],
+    transform: {
+        '^.+\\.tsx?$': 'ts-jest',
+    },
 };
