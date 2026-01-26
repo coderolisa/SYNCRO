@@ -1,63 +1,128 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { type NextRequest } from "next/server"
+import { createApiRoute, createSuccessResponse, validateRequestBody, CommonSchemas, RateLimiters } from "@/lib/api"
+import { HttpStatus } from "@/lib/api/types"
+import { z } from "zod"
+import { createClient } from "@/lib/supabase/server"
+import { checkOwnership } from "@/lib/api/auth"
 
-// Mock database - in production, use a real database
-const subscriptions = [
-  {
-    id: 1,
-    name: "Midjourney",
-    category: "Image Generation",
-    price: 20,
-    status: "active",
-    renewsIn: 5,
-    userId: "user-1",
-    createdAt: new Date(),
-  },
-  {
-    id: 2,
-    name: "Gemini",
-    category: "Image Generation",
-    price: 20,
-    status: "active",
-    renewsIn: 12,
-    userId: "user-1",
-    createdAt: new Date(),
-  },
-]
+// Validation schemas
+const createSubscriptionSchema = z.object({
+  name: z.string().min(1, "Name is required").max(100, "Name must be less than 100 characters"),
+  category: z.string().min(1, "Category is required"),
+  price: z.number().positive("Price must be greater than 0"),
+  status: z.enum(["active", "cancelled", "expired"]).default("active"),
+  renewsIn: z.number().int().min(0).optional(),
+  email: z.string().email().optional(),
+})
 
-export async function GET(request: NextRequest) {
-  try {
-    // In production, fetch from database with user authentication
-    return NextResponse.json({ subscriptions, success: true })
-  } catch (error) {
-    return NextResponse.json({ error: "Failed to fetch subscriptions" }, { status: 500 })
-  }
-}
+const getSubscriptionsSchema = CommonSchemas.pagination.extend({
+  status: z.enum(["active", "cancelled", "expired"]).optional(),
+  category: z.string().optional(),
+})
 
-export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json()
-    const { name, category, price } = body
-
-    if (!name || !category || !price) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
+export const GET = createApiRoute(
+  async (request: NextRequest, context, user) => {
+    if (!user) {
+      throw new Error("User not authenticated")
     }
 
-    // In production, save to database
-    const newSubscription = {
-      id: Math.max(...subscriptions.map((s) => s.id), 0) + 1,
-      name,
-      category,
-      price,
-      status: "active",
-      renewsIn: 30,
-      userId: "user-1",
-      createdAt: new Date(),
+    // Validate query parameters
+    const url = new URL(request.url)
+    const queryParams: Record<string, string> = {}
+    url.searchParams.forEach((value, key) => {
+      queryParams[key] = value
+    })
+
+    const query = getSubscriptionsSchema.partial().safeParse(queryParams)
+    const { page = 1, limit = 20, status, category } = query.success ? query.data : {}
+
+    const supabase = await createClient()
+    let queryBuilder = supabase
+      .from("subscriptions")
+      .select("*", { count: "exact" })
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+
+    if (status) {
+      queryBuilder = queryBuilder.eq("status", status)
     }
 
-    subscriptions.push(newSubscription)
+    if (category) {
+      queryBuilder = queryBuilder.eq("category", category)
+    }
 
-    return NextResponse.json({ subscription: newSubscription, success: true }, { status: 201 })
-  } catch (error) {
-    return NextResponse.json({ error: "Failed to create subscription" }, { status: 500 })
+    // Apply pagination
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+    queryBuilder = queryBuilder.range(from, to)
+
+    const { data, error, count } = await queryBuilder
+
+    if (error) {
+      throw new Error(`Failed to fetch subscriptions: ${error.message}`)
+    }
+
+    const total = count || 0
+    const totalPages = Math.ceil(total / limit)
+
+    return createSuccessResponse(
+      {
+        items: data || [],
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasNext: page < totalPages,
+          hasPrev: page > 1,
+        },
+      },
+      HttpStatus.OK,
+      context.requestId
+    )
+  },
+  {
+    requireAuth: true,
+    rateLimit: RateLimiters.standard,
   }
-}
+)
+
+export const POST = createApiRoute(
+  async (request: NextRequest, context, user) => {
+    if (!user) {
+      throw new Error("User not authenticated")
+    }
+
+    // Validate request body
+    const body = await validateRequestBody(request, createSubscriptionSchema)
+
+    const supabase = await createClient()
+    const { data, error } = await supabase
+      .from("subscriptions")
+      .insert({
+        user_id: user.id,
+        name: body.name,
+        category: body.category,
+        price: body.price,
+        status: body.status,
+        renews_in: body.renewsIn || 30,
+        email: body.email,
+      })
+      .select()
+      .single()
+
+    if (error) {
+      throw new Error(`Failed to create subscription: ${error.message}`)
+    }
+
+    return createSuccessResponse(
+      { subscription: data },
+      HttpStatus.CREATED,
+      context.requestId
+    )
+  },
+  {
+    requireAuth: true,
+    rateLimit: RateLimiters.standard,
+  }
+)

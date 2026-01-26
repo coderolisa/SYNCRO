@@ -1,0 +1,295 @@
+# API Infrastructure Documentation
+
+This directory contains the core infrastructure for the Next.js API routes, providing authentication, authorization, validation, error handling, rate limiting, and more.
+
+## Structure
+
+```
+lib/api/
+├── index.ts          # Main exports and route handler factory
+├── types.ts          # TypeScript types and enums
+├── errors.ts         # Error handling and response utilities
+├── auth.ts           # Authentication and authorization
+├── validation.ts     # Request validation with Zod
+├── rate-limit.ts     # Rate limiting middleware
+├── env.ts            # Environment configuration
+└── README.md         # This file
+```
+
+## Quick Start
+
+### Basic Protected Route
+
+```typescript
+import { createApiRoute, createSuccessResponse, RateLimiters } from "@/lib/api"
+import { HttpStatus } from "@/lib/api/types"
+import { type NextRequest } from "next/server"
+
+export const GET = createApiRoute(
+  async (request: NextRequest, context, user) => {
+    // user is guaranteed to be authenticated
+    // Your route logic here
+    
+    return createSuccessResponse(
+      { data: "your data" },
+      HttpStatus.OK,
+      context.requestId
+    )
+  },
+  {
+    requireAuth: true,
+    rateLimit: RateLimiters.standard,
+  }
+)
+```
+
+### Route with Validation
+
+```typescript
+import { createApiRoute, validateRequestBody, RateLimiters } from "@/lib/api"
+import { z } from "zod"
+import { type NextRequest } from "next/server"
+
+const createSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+})
+
+export const POST = createApiRoute(
+  async (request: NextRequest, context, user) => {
+    const body = await validateRequestBody(request, createSchema)
+    
+    // body is fully validated and typed
+    // Your logic here
+    
+    return createSuccessResponse({ success: true })
+  },
+  {
+    requireAuth: true,
+    rateLimit: RateLimiters.standard,
+  }
+)
+```
+
+### Dynamic Route with Parameters
+
+```typescript
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params
+  
+  return createApiRoute(
+    async (req, context, user) => {
+      // Use id here
+      return createSuccessResponse({ deleted: id })
+    },
+    {
+      requireAuth: true,
+      rateLimit: RateLimiters.standard,
+    }
+  )(request)
+}
+```
+
+## Features
+
+### 1. Authentication & Authorization
+
+- **Automatic authentication**: Use `requireAuth: true` in route options
+- **Role-based access**: Use `requireRole: ['admin', 'moderator']`
+- **User context**: Access authenticated user in route handler
+
+```typescript
+import { requireAuth, requireRole, checkOwnership } from "@/lib/api/auth"
+
+// In route handler
+const user = await requireAuth(request)
+const admin = await requireRole(request, ['admin'])
+checkOwnership(user.id, resourceUserId)
+```
+
+### 2. Request Validation
+
+- **Zod schemas**: Type-safe validation
+- **Automatic error responses**: Invalid requests return 400 with details
+- **Body, query, and params validation**
+
+```typescript
+import { validateRequestBody, validateQueryParams, CommonSchemas } from "@/lib/api"
+
+// Validate body
+const body = await validateRequestBody(request, schema)
+
+// Validate query params
+const query = validateQueryParams(request, CommonSchemas.pagination)
+```
+
+### 3. Error Handling
+
+- **Standardized error responses**: Consistent error format
+- **Automatic error conversion**: Zod errors → API errors
+- **Error codes**: Predefined error codes for common scenarios
+
+```typescript
+import { ApiErrors } from "@/lib/api/errors"
+
+throw ApiErrors.notFound("User")
+throw ApiErrors.unauthorized("Invalid token")
+throw ApiErrors.validationError("Invalid email", "email")
+```
+
+### 4. Rate Limiting
+
+- **Predefined limiters**: `strict`, `standard`, `generous`, `auth`
+- **Custom limiters**: Create your own with `createRateLimiter`
+- **User-based limiting**: Limit per user instead of IP
+
+```typescript
+import { RateLimiters, createRateLimiter } from "@/lib/api"
+
+// Use predefined
+rateLimit: RateLimiters.strict
+
+// Create custom
+const customLimiter = createRateLimiter({
+  windowMs: 60 * 1000, // 1 minute
+  maxRequests: 10,
+})
+```
+
+### 5. Environment Management
+
+- **Validated environment**: Type-safe environment variables
+- **Runtime validation**: Fails fast on missing/invalid vars
+
+```typescript
+import { getEnv, isProduction, isMaintenanceMode } from "@/lib/api/env"
+
+const env = getEnv()
+if (isMaintenanceMode()) {
+  // Handle maintenance
+}
+```
+
+## Response Format
+
+All API responses follow a standard format:
+
+### Success Response
+
+```json
+{
+  "success": true,
+  "data": { /* your data */ },
+  "meta": {
+    "timestamp": "2024-01-01T00:00:00.000Z",
+    "requestId": "uuid-here"
+  }
+}
+```
+
+### Error Response
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Invalid email format",
+    "field": "email",
+    "details": { /* additional details */ }
+  },
+  "meta": {
+    "timestamp": "2024-01-01T00:00:00.000Z",
+    "requestId": "uuid-here"
+  }
+}
+```
+
+## Health Check Endpoints
+
+- `GET /api/health` - Basic health check
+- `GET /api/health/live` - Liveness probe (Kubernetes)
+- `GET /api/health/ready` - Readiness probe (checks dependencies)
+
+## Error Codes
+
+- `UNAUTHORIZED` - Authentication required
+- `FORBIDDEN` - Insufficient permissions
+- `NOT_FOUND` - Resource not found
+- `VALIDATION_ERROR` - Request validation failed
+- `RATE_LIMIT_EXCEEDED` - Too many requests
+- `INTERNAL_ERROR` - Server error
+- `SERVICE_UNAVAILABLE` - Service temporarily unavailable
+
+## Best Practices
+
+1. **Always use `createApiRoute`** for consistent error handling
+2. **Validate all inputs** with Zod schemas
+3. **Use appropriate rate limits** based on endpoint sensitivity
+4. **Check ownership** for resource operations
+5. **Use typed responses** with TypeScript
+6. **Handle errors gracefully** - let the infrastructure handle formatting
+
+## Testing
+
+The infrastructure is designed to be testable:
+
+```typescript
+import { createApiRoute } from "@/lib/api"
+import { createMocks } from "node-mocks-http"
+
+// Mock request
+const { req, res } = createMocks({
+  method: "GET",
+  url: "/api/test",
+})
+
+// Test route
+const handler = createApiRoute(async (request) => {
+  return createSuccessResponse({ test: true })
+})
+```
+
+## Migration Guide
+
+### Before
+
+```typescript
+export async function GET(request: NextRequest) {
+  try {
+    const user = await getAuth(request)
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+    // ... logic
+    return NextResponse.json({ data })
+  } catch (error) {
+    return NextResponse.json({ error: "Failed" }, { status: 500 })
+  }
+}
+```
+
+### After
+
+```typescript
+export const GET = createApiRoute(
+  async (request, context, user) => {
+    // user is guaranteed, errors handled automatically
+    // ... logic
+    return createSuccessResponse({ data })
+  },
+  { requireAuth: true }
+)
+```
+
+## Production Considerations
+
+1. **Rate Limiting**: Consider Redis-based rate limiting for production
+2. **Error Logging**: Integrate with Sentry or similar
+3. **Monitoring**: Add metrics collection
+4. **Caching**: Implement response caching where appropriate
+5. **Database**: Use connection pooling and query optimization
+

@@ -1,52 +1,73 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { type NextRequest } from "next/server"
 import Stripe from "stripe"
+import { createApiRoute, createSuccessResponse, validateRequestBody, RateLimiters } from "@/lib/api"
+import { HttpStatus, ApiErrors } from "@/lib/api/types"
+import { z } from "zod"
+
+// Validation schema
+const paymentSchema = z.object({
+  amount: z.number().positive("Amount must be positive"),
+  currency: z.string().length(3, "Currency must be 3 characters").default("usd"),
+  token: z.string().min(1, "Payment token is required"),
+  planName: z.string().min(1, "Plan name is required"),
+})
 
 function getStripeClient() {
   const apiKey = process.env.STRIPE_SECRET_KEY
   if (!apiKey) {
-    throw new Error("STRIPE_SECRET_KEY environment variable is not set")
+    throw ApiErrors.internalError("Stripe is not configured. Please contact support.")
   }
-  return new Stripe(apiKey)
+  return new Stripe(apiKey, {
+    apiVersion: "2024-12-18.acacia",
+  })
 }
 
-export async function POST(request: NextRequest) {
-  try {
-    const stripe = getStripeClient()
-    const body = await request.json()
-    const { amount, currency = "usd", token, planName } = body
-
-    if (!amount || !token) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
+export const POST = createApiRoute(
+  async (request: NextRequest, context, user) => {
+    if (!user) {
+      throw new Error("User not authenticated")
     }
 
-    const charge = await stripe.charges.create({
-      amount: Math.round(amount),
-      currency,
-      source: token,
-      description: `Subsync.AI - ${planName} Plan Upgrade`,
-      metadata: {
-        planName,
-      },
-    })
+    // Validate request body
+    const body = await validateRequestBody(request, paymentSchema)
 
-    return NextResponse.json(
-      {
-        success: true,
-        payment: {
-          id: charge.id,
-          amount: charge.amount,
-          currency: charge.currency,
-          status: charge.status,
-          createdAt: new Date(charge.created * 1000),
+    const stripe = getStripeClient()
+
+    try {
+      const charge = await stripe.charges.create({
+        amount: Math.round(body.amount * 100), // Convert to cents
+        currency: body.currency,
+        source: body.token,
+        description: `Subsync.AI - ${body.planName} Plan Upgrade`,
+        metadata: {
+          planName: body.planName,
+          userId: user.id,
+          userEmail: user.email || "",
         },
-      },
-      { status: 201 },
-    )
-  } catch (error) {
-    console.error("Payment error:", error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to process payment" },
-      { status: 500 },
-    )
+      })
+
+      return createSuccessResponse(
+        {
+          payment: {
+            id: charge.id,
+            amount: charge.amount / 100, // Convert back to dollars
+            currency: charge.currency,
+            status: charge.status,
+            createdAt: new Date(charge.created * 1000),
+          },
+        },
+        HttpStatus.CREATED,
+        context.requestId
+      )
+    } catch (error) {
+      if (error instanceof Stripe.errors.StripeError) {
+        throw ApiErrors.internalError(`Payment processing failed: ${error.message}`)
+      }
+      throw error
+    }
+  },
+  {
+    requireAuth: true,
+    rateLimit: RateLimiters.strict, // Stricter rate limit for payment endpoints
   }
-}
+)

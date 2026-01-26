@@ -1,7 +1,9 @@
 import type { NextRequest } from "next/server"
 import { NextResponse } from "next/server"
+import { updateSession } from "@/lib/supabase/middleware"
+import { isMaintenanceMode } from "@/lib/api/env"
 
-// Security headers only
+// Security headers
 const securityHeaders = {
   "X-DNS-Prefetch-Control": "on",
   "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
@@ -13,11 +15,34 @@ const securityHeaders = {
 }
 
 export async function middleware(request: NextRequest) {
-  const response = NextResponse.next()
+  // Check maintenance mode (skip for health checks)
+  if (
+    isMaintenanceMode() &&
+    !request.nextUrl.pathname.startsWith("/api/health")
+  ) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: {
+          code: "SERVICE_UNAVAILABLE",
+          message: "Service is currently under maintenance",
+        },
+      },
+      { status: 503 }
+    )
+  }
 
+  // Update Supabase session and handle auth redirects
+  const response = await updateSession(request)
+
+  // Add security headers to all responses
   Object.entries(securityHeaders).forEach(([key, value]) => {
     response.headers.set(key, value)
   })
+
+  // Add request ID for tracing
+  const requestId = request.headers.get("x-request-id") || crypto.randomUUID()
+  response.headers.set("x-request-id", requestId)
 
   return response
 }
