@@ -1,8 +1,10 @@
 import express from 'express';
+import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import logger from './config/logger';
 import { schedulerService } from './services/scheduler';
 import { reminderEngine } from './services/reminder-engine';
+import subscriptionRoutes from './routes/subscriptions';
 import { monitoringService } from './services/monitoring-service';
 
 // Load environment variables
@@ -12,7 +14,22 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || 'development-admin-key';
 
+// CORS configuration
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', FRONTEND_URL);
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Idempotency-Key, If-Match');
+  
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // Middleware
+app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -30,6 +47,9 @@ const adminAuth = (req: express.Request, res: express.Response, next: express.Ne
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// API Routes
+app.use('/api/subscriptions', subscriptionRoutes);
 
 // API Routes (Public/Standard)
 app.get('/api/reminders/status', (req, res) => {
