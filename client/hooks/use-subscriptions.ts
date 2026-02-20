@@ -72,6 +72,8 @@ export function useSubscriptions({
           editedFields: dbSub.edited_fields || dbSub.editedFields || [],
           pricingType: dbSub.pricing_type || dbSub.pricingType || "fixed",
           billingCycle: dbSub.billing_cycle || dbSub.billingCycle || "monthly",
+          expiryThreshold: dbSub.expiry_threshold || dbSub.expiryThreshold || null,
+          expiredAt: dbSub.expired_at || dbSub.expiredAt,
         }));
 
         if (items.length > 0) {

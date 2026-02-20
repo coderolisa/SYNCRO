@@ -3,6 +3,7 @@ import { subscriptionService } from '../services/subscription-service';
 import { idempotencyService } from '../services/idempotency';
 import { authenticate, AuthenticatedRequest } from '../middleware/auth';
 import { validateSubscriptionOwnership, validateBulkSubscriptionOwnership } from '../middleware/ownership';
+import { validateExpiryThreshold } from '../utils/expiry';
 import logger from '../config/logger';
 
 const router = Router();
@@ -106,6 +107,18 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
+    // Validate expiry_threshold if provided
+    if (req.body.expiry_threshold !== undefined) {
+      try {
+        req.body.expiry_threshold = validateExpiryThreshold(req.body.expiry_threshold);
+      } catch (err) {
+        return res.status(400).json({
+          success: false,
+          error: err instanceof Error ? err.message : 'Invalid expiry_threshold',
+        });
+      }
+    }
+
     // Create subscription
     const result = await subscriptionService.createSubscription(
       req.user!.id,
@@ -167,6 +180,18 @@ router.patch('/:id', validateSubscriptionOwnership, async (req: AuthenticatedReq
         return res
           .status(idempotencyCheck.cachedResponse.status)
           .json(idempotencyCheck.cachedResponse.body);
+      }
+    }
+
+    // Validate expiry_threshold if provided
+    if (req.body.expiry_threshold !== undefined) {
+      try {
+        req.body.expiry_threshold = validateExpiryThreshold(req.body.expiry_threshold);
+      } catch (err) {
+        return res.status(400).json({
+          success: false,
+          error: err instanceof Error ? err.message : 'Invalid expiry_threshold',
+        });
       }
     }
 

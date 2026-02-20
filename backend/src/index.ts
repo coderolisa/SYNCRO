@@ -7,6 +7,7 @@ import { reminderEngine } from './services/reminder-engine';
 import subscriptionRoutes from './routes/subscriptions';
 import { monitoringService } from './services/monitoring-service';
 import { eventListener } from './services/event-listener';
+import { expiryService } from './services/expiry-service';
 
 // Load environment variables
 dotenv.config();
@@ -120,6 +121,19 @@ app.post('/api/reminders/retry', adminAuth, async (req, res) => {
     res.json({ success: true, message: 'Retries processed' });
   } catch (error) {
     logger.error('Error processing retries:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.post('/api/admin/expiry/process', adminAuth, async (req, res) => {
+  try {
+    const result = await expiryService.processExpiries();
+    res.json({ success: true, data: result });
+  } catch (error) {
+    logger.error('Error processing expiries:', error);
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : String(error),

@@ -44,6 +44,7 @@ export class SubscriptionService {
             notes: input.notes || null,
             tags: input.tags || [],
             email_account_id: input.email_account_id || null,
+            expiry_threshold: input.expiry_threshold || null,
             updated_at: new Date().toISOString(),
           })
           .select()
