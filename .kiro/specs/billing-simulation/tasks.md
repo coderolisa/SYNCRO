@@ -33,7 +33,7 @@
   - **Property 8: Empty projections yield zero spend**
   - **Validates: Requirements 3.3**
 
-- [ ] 2. Create API route handler for simulation endpoint
+- [x] 2. Create API route handler for simulation endpoint
   - Create `backend/src/routes/simulation.ts` file
   - Implement `GET /api/simulation` endpoint
   - Add authentication middleware to protect the endpoint
@@ -54,7 +54,7 @@
   - Test response structure matches expected format
   - _Requirements: 5.2, 5.4, 5.5, 6.3, 6.4, 6.5_
 
-- [ ] 3. Add balance risk assessment logic
+- [x] 3. Add balance risk assessment logic
   - Extend `generateSimulation` to accept optional balance parameter
   - Implement risk calculation logic
   - Add risk object to response when balance is provided
