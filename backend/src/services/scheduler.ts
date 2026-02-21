@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import logger from '../config/logger';
 import { reminderEngine } from './reminder-engine';
+import { riskDetectionService } from './risk-detection/risk-detection-service';
 
 export class SchedulerService {
   private jobs: cron.ScheduledTask[] = [];
@@ -46,6 +47,24 @@ export class SchedulerService {
     });
 
     this.jobs.push(retryJob);
+
+    // Schedule risk recalculation - runs daily at 2 AM UTC
+    const riskRecalculationJob = cron.schedule('0 2 * * *', async () => {
+      logger.info('Running scheduled risk recalculation');
+      try {
+        const result = await riskDetectionService.recalculateAllRisks();
+        logger.info('Risk recalculation completed', {
+          total: result.total,
+          successful: result.successful,
+          failed: result.failed,
+          duration_ms: result.duration_ms,
+        });
+      } catch (error) {
+        logger.error('Error in scheduled risk recalculation:', error);
+      }
+    });
+
+    this.jobs.push(riskRecalculationJob);
 
     logger.info(`Started ${this.jobs.length} scheduled jobs`);
   }
