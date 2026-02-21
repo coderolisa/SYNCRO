@@ -17,6 +17,13 @@ struct ApprovalKey {
     approval_id: u64,
 }
 
+/// Storage key for cycle-level deduplication per subscription
+#[contracttype]
+#[derive(Clone)]
+struct CycleKey {
+    sub_id: u64,
+}
+
 /// Renewal approval bound to subscription, amount, and expiration
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,6 +41,7 @@ pub enum SubscriptionState {
     Active,
     Retrying,
     Failed,
+    Cancelled,
 }
 
 /// Core subscription data stored on-chain
@@ -84,6 +92,12 @@ pub struct ApprovalRejected {
     pub sub_id: u64,
     pub approval_id: u64,
     pub reason: u32, // 1=expired, 2=used, 3=amount_exceeded, 4=not_found
+}
+
+#[contractevent]
+pub struct DuplicateRenewalRejected {
+    pub sub_id: u64,
+    pub cycle_id: u64,
 }
 
 #[contract]
@@ -139,6 +153,32 @@ impl SubscriptionRenewalContract {
             last_attempt_ledger: 0,
         };
         env.storage().persistent().set(&key, &data);
+    }
+
+    /// Explicitly cancel a subscription
+    pub fn cancel_sub(env: Env, sub_id: u64) {
+        let key = sub_id;
+        let mut data: SubscriptionData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("Subscription not found");
+
+        data.owner.require_auth();
+
+        if data.state == SubscriptionState::Cancelled {
+            panic!("Subscription already cancelled");
+        }
+
+        data.state = SubscriptionState::Cancelled;
+        env.storage().persistent().set(&key, &data);
+
+        // Emit state transition event
+        StateTransition {
+            sub_id,
+            new_state: SubscriptionState::Cancelled,
+        }
+        .publish(&env);
     }
 
     // ── Approval management ───────────────────────────────────────
@@ -252,18 +292,15 @@ impl SubscriptionRenewalContract {
         amount: i128,
         max_retries: u32,
         cooldown_ledgers: u32,
+        cycle_id: u64,
         succeed: bool,
     ) -> bool {
-        // Check global pause
+        // 1. Check global pause
         if Self::is_paused(env.clone()) {
             panic!("Protocol is paused");
         }
 
-        // Validate and consume approval
-        if !Self::consume_approval(&env, sub_id, approval_id, amount) {
-            panic!("Invalid or expired approval");
-        }
-
+        // 2. Load subscription data
         let key = sub_id;
         let mut data: SubscriptionData = env
             .storage()
@@ -271,16 +308,30 @@ impl SubscriptionRenewalContract {
             .get(&key)
             .expect("Subscription not found");
 
-        // If already failed, we can't renew (or maybe we specifically handle this, but simpler to abort)
+        // 3. Check failed state
         if data.state == SubscriptionState::Failed {
             panic!("Subscription is in FAILED state");
         }
 
-        let current_ledger = env.ledger().sequence();
+        // 4. Cycle guard: reject duplicate renewal for the same billing cycle
+        let cycle_key = CycleKey { sub_id };
+        let last_cycle: Option<u64> = env.storage().persistent().get(&cycle_key);
+        if let Some(last) = last_cycle {
+            if cycle_id == last {
+                DuplicateRenewalRejected { sub_id, cycle_id }.publish(&env);
+                panic!("Duplicate renewal for cycle");
+            }
+        }
 
-        // Check cooldown
+        // 5. Check cooldown
+        let current_ledger = env.ledger().sequence();
         if data.failure_count > 0 && current_ledger < data.last_attempt_ledger + cooldown_ledgers {
             panic!("Cooldown period active");
+        }
+
+        // 6. Validate and consume approval
+        if !Self::consume_approval(&env, sub_id, approval_id, amount) {
+            panic!("Invalid or expired approval");
         }
 
         if succeed {
@@ -289,6 +340,9 @@ impl SubscriptionRenewalContract {
             data.failure_count = 0;
             data.last_attempt_ledger = current_ledger;
             env.storage().persistent().set(&key, &data);
+
+            // Store cycle_id on success only
+            env.storage().persistent().set(&cycle_key, &cycle_id);
 
             // Emit renewal success event
             RenewalSuccess {
@@ -300,6 +354,7 @@ impl SubscriptionRenewalContract {
             true
         } else {
             // Simulated failure - renewal failed, apply retry logic
+            // Do NOT store cycle_id on failure — retries with same cycle_id remain allowed
             data.failure_count += 1;
             data.last_attempt_ledger = current_ledger;
 
