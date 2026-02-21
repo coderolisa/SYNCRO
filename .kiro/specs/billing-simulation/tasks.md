@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. Create simulation service with core projection logic
+- [x] 1. Create simulation service with core projection logic
   - Implement `SimulationService` class in `backend/src/services/simulation-service.ts`
   - Implement `calculateNextRenewal` function for date calculations
   - Implement `projectSubscriptionRenewals` function to generate renewals for a single subscription
