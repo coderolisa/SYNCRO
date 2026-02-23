@@ -8,6 +8,7 @@ import logger from './config/logger';
 import { schedulerService } from './services/scheduler';
 import { reminderEngine } from './services/reminder-engine';
 import subscriptionRoutes from './routes/subscriptions';
+import simulationRoutes from './routes/simulation';
 import merchantRoutes from './routes/merchants';
 import { monitoringService } from './services/monitoring-service';
 import { healthService } from './services/health-service';
@@ -46,6 +47,7 @@ app.get('/health', (req, res) => {
 
 // API Routes
 app.use('/api/subscriptions', subscriptionRoutes);
+app.use('/api/simulation', simulationRoutes);
 app.use('/api/merchants', merchantRoutes);
 
 // API Routes (Public/Standard)
