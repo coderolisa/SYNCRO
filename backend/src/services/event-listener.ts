@@ -3,6 +3,13 @@ import { supabase } from '../config/database';
 import { reorgHandler } from './reorg-handler';
 import { generateCycleId } from '../utils/cycle-id';
 
+export const LIFECYCLE_COLUMN_MAP: Record<number, string> = {
+  1: 'blockchain_created_at',
+  2: 'blockchain_activated_at',
+  3: 'blockchain_last_renewed_at',
+  4: 'blockchain_canceled_at',
+};
+
 interface ContractEvent {
   type: string;
   ledger: number;
@@ -128,6 +135,7 @@ export class EventListener {
       RenewalLockAcquired: this.handleRenewalLockAcquired.bind(this),
       RenewalLockReleased: this.handleRenewalLockReleased.bind(this),
       RenewalLockExpired: this.handleRenewalLockExpired.bind(this),
+      LifecycleTimestampUpdated: this.handleLifecycleTimestampUpdated.bind(this),
     };
 
     return handlers[eventType];
@@ -303,6 +311,31 @@ export class EventListener {
     return {
       sub_id,
       event_type: 'renewal_lock_expired',
+      ledger: event.ledger,
+      tx_hash: event.txHash,
+      event_data: event.value,
+    };
+  }
+
+  private async handleLifecycleTimestampUpdated(event: ContractEvent): Promise<ProcessedEvent | null> {
+    const { sub_id, event_kind, timestamp } = event.value;
+
+    const column = LIFECYCLE_COLUMN_MAP[event_kind];
+    if (!column) {
+      logger.warn('Unknown lifecycle event_kind', { sub_id, event_kind });
+      return null;
+    }
+
+    await supabase
+      .from('subscriptions')
+      .update({ [column]: timestamp })
+      .eq('blockchain_sub_id', sub_id);
+
+    logger.info('Lifecycle timestamp updated', { sub_id, column, timestamp });
+
+    return {
+      sub_id,
+      event_type: 'lifecycle_timestamp_updated',
       ledger: event.ledger,
       tx_hash: event.txHash,
       event_data: event.value,

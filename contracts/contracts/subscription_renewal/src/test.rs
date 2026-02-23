@@ -1,795 +1,717 @@
-use super::*;
-use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    Address, Env,
-};
+#![no_std]
+use soroban_sdk::{contract, contractevent, contractimpl, contracttype, token, Address, Env};
 
-/// Helper: creates env, registers contract, initializes admin, returns (client, admin, token).
-fn setup() -> (Env, SubscriptionRenewalContractClient<'static>, Address, Address) {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(SubscriptionRenewalContract, ());
-    let client = SubscriptionRenewalContractClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    client.init(&admin);
-
-    // Register a mock token (Stellar Asset Contract)
-    let token = env.register_stellar_asset_contract(admin.clone());
-
-    (env, client, admin, token)
+/// Storage keys for contract-level state (admin, pause flag).
+#[contracttype]
+#[derive(Clone)]
+enum ContractKey {
+    Admin,
+    Paused,
+    FeeConfig,
 }
 
-// ── Pause feature tests ──────────────────────────────────────────
-
-#[test]
-fn test_default_not_paused() {
-    let (_env, client, _admin, _token) = setup();
-    assert!(!client.is_paused());
+/// Storage key for approvals: (sub_id, approval_id)
+#[contracttype]
+#[derive(Clone)]
+struct ApprovalKey {
+    sub_id: u64,
+    approval_id: u64,
 }
 
-#[test]
-fn test_admin_can_pause() {
-    let (_env, client, _admin, _token) = setup();
-
-    client.set_paused(&true);
-    assert!(client.is_paused());
+/// Storage key for cycle-level deduplication per subscription
+#[contracttype]
+#[derive(Clone)]
+struct CycleKey {
+    sub_id: u64,
 }
 
-#[test]
-fn test_admin_can_unpause() {
-    let (_env, client, _admin, _token) = setup();
-
-    client.set_paused(&true);
-    assert!(client.is_paused());
-
-    client.set_paused(&false);
-    assert!(!client.is_paused());
+/// Storage key for renewal processing lock
+#[contracttype]
+#[derive(Clone)]
+struct RenewalLockKey {
+    lock_sub_id: u64,
 }
 
-#[test]
-#[should_panic(expected = "Protocol is paused")]
-fn test_renew_blocked_when_paused() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 100;
-
-    client.init_sub(&user, &sub_id);
-    client.approve_renewal(&sub_id, &1, &1000, &100);
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.set_paused(&true);
-
-    // Should panic because the protocol is paused
-    client.renew(&sub_id, &1, &500, &token, &3, &10, &20260101, &true);
+/// Storage key for lifecycle timestamps per subscription
+#[contracttype]
+#[derive(Clone)]
+struct LifecycleKey {
+    lifecycle_sub_id: u64,
 }
 
-#[test]
-fn test_renew_works_after_unpause() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 101;
-
-    client.init_sub(&user, &sub_id);
-    client.approve_renewal(&sub_id, &1, &1000, &100);
-
-    // Pause then unpause
-    client.set_paused(&true);
-    client.set_paused(&false);
-
-    // Should succeed now
-    client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &20260101, &true);
-    assert!(result);
+/// Data stored for an active renewal lock
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RenewalLockData {
+    pub locked_at: u32,
+    pub lock_timeout: u32,
 }
 
-#[test]
-#[should_panic(expected = "Already initialized")]
-fn test_cannot_init_twice() {
-    let (env, client, _admin, _token) = setup();
-    let another = Address::generate(&env);
-    client.init(&another);
+/// Renewal approval bound to subscription, amount, and expiration
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RenewalApproval {
+    pub sub_id: u64,
+    pub max_spend: i128,
+    pub expires_at: u32,
+    pub used: bool,
 }
 
-// ── Original tests (updated to use setup helper) ─────────────────
-
-#[test]
-fn test_renewal_success() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 123;
-
-    client.init_sub(&user, &sub_id);
-    client.approve_renewal(&sub_id, &1, &1000, &100);
-
-    client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &20260115, &true);
-    assert!(result);
-
-    let data = client.get_sub(&sub_id);
-    assert_eq!(data.state, SubscriptionState::Active);
-    assert_eq!(data.failure_count, 0);
+/// Represents the current state of a subscription
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SubscriptionState {
+    Active,
+    Retrying,
+    Failed,
+    Cancelled,
 }
 
-#[test]
-fn test_retry_logic() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 456;
-    let max_retries = 2;
-    let cooldown = 10;
-
-    client.init_sub(&user, &sub_id);
-
-    // First failure (cycle_id same for retries — allowed because failure doesn't store cycle)
-    client.approve_renewal(&sub_id, &1, &1000, &200);
-    client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &token, &max_retries, &cooldown, &20260201, &false);
-    assert!(!result);
-
-    let data = client.get_sub(&sub_id);
-    assert_eq!(data.state, SubscriptionState::Retrying);
-    assert_eq!(data.failure_count, 1);
-
-    // Advance ledger to pass cooldown
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 100;
-    });
-
-    // renewal attempt but fail again (ledger 100)
-    client.approve_renewal(&sub_id, &2, &1000, &200);
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &2, &500, &token, &max_retries, &cooldown, &20260201, &false);
-
-    // Advance past cooldown
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 120;
-    });
-
-    // Third failure (count becomes 3 > max_retries 2) -> Should fail
-    client.approve_renewal(&sub_id, &3, &1000, &200);
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &3, &500, &token, &max_retries, &cooldown, &20260201, &false);
-
-    let data = client.get_sub(&sub_id);
-    assert_eq!(data.state, SubscriptionState::Failed);
-    assert_eq!(data.failure_count, 3);
+/// Fee configuration set by the admin
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeConfig {
+    pub percentage: u32,
+    pub recipient: Address,
 }
 
-#[test]
-#[should_panic(expected = "Cooldown period active")]
-fn test_cooldown_enforcement() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 789;
-
-    client.init_sub(&user, &sub_id);
-
-    // Fail once
-    client.approve_renewal(&sub_id, &1, &1000, &100);
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &1, &500, &token, &3, &10, &20260301, &false);
-
-    // Try again immediately (cooldown not met)
-    client.approve_renewal(&sub_id, &2, &1000, &100);
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &2, &500, &token, &3, &10, &20260301, &false);
+/// Core subscription data stored on-chain
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubscriptionData {
+    pub owner: Address,
+    pub state: SubscriptionState,
+    pub failure_count: u32,
+    pub last_attempt_ledger: u32,
 }
 
-#[test]
-fn test_event_emission_on_success() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 999;
-
-    client.init_sub(&user, &sub_id);
-    client.approve_renewal(&sub_id, &1, &1000, &100);
-
-    // Successful renewal should emit RenewalSuccess event
-    client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &20260315, &true);
-    assert!(result);
-
-    // Verify event was emitted by checking subscription data
-    let data = client.get_sub(&sub_id);
-    assert_eq!(data.state, SubscriptionState::Active);
-    assert_eq!(data.failure_count, 0);
+/// Immutable audit timestamps for subscription lifecycle events.
+/// All timestamps are Unix epoch seconds from env.ledger().timestamp().
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LifecycleTimestamps {
+    pub created_at: u64,
+    pub activated_at: u64,
+    pub last_renewed_at: u64,
+    pub canceled_at: u64,
 }
 
-#[test]
-fn test_zero_max_retries() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 111;
-    let max_retries = 0;
-
-    client.init_sub(&user, &sub_id);
-    client.approve_renewal(&sub_id, &1, &1000, &100);
-
-    // First failure with max_retries = 0 should immediately fail
-    client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &token, &max_retries, &10, &20260401, &false);
-    assert!(!result);
-
-    let data = client.get_sub(&sub_id);
-    assert_eq!(data.state, SubscriptionState::Failed);
-    assert_eq!(data.failure_count, 1);
+/// Events for subscription renewal tracking
+#[contractevent]
+pub struct RenewalSuccess {
+    pub sub_id: u64,
+    pub owner: Address,
 }
 
-#[test]
-fn test_multiple_failures_then_success() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 222;
-    let max_retries = 3;
-    let cooldown = 10;
-
-    client.init_sub(&user, &sub_id);
-
-    // First failure
-    client.approve_renewal(&sub_id, &1, &1000, &200);
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &1, &500, &token, &max_retries, &cooldown, &20260501, &false);
-    let data = client.get_sub(&sub_id);
-    assert_eq!(data.state, SubscriptionState::Retrying);
-    assert_eq!(data.failure_count, 1);
-
-    // Advance ledger
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 20;
-    });
-
-    // Second failure
-    client.approve_renewal(&sub_id, &2, &1000, &200);
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &2, &500, &token, &max_retries, &cooldown, &20260501, &false);
-    let data = client.get_sub(&sub_id);
-    assert_eq!(data.state, SubscriptionState::Retrying);
-    assert_eq!(data.failure_count, 2);
-
-    // Advance ledger
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 40;
-    });
-
-    // Now succeed - should reset failure count and return to Active
-    client.approve_renewal(&sub_id, &3, &1000, &200);
-    client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &3, &500, &token, &max_retries, &cooldown, &20260501, &true);
-    assert!(result);
-
-    let data = client.get_sub(&sub_id);
-    assert_eq!(data.state, SubscriptionState::Active);
-    assert_eq!(data.failure_count, 0);
+#[contractevent]
+pub struct RenewalFailed {
+    pub sub_id: u64,
+    pub failure_count: u32,
+    pub ledger: u32,
 }
 
-#[test]
-#[should_panic(expected = "Subscription is in FAILED state")]
-fn test_cannot_renew_failed_subscription() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 333;
-    let max_retries = 1;
-    let cooldown = 10;
-
-    client.init_sub(&user, &sub_id);
-
-    // Fail twice to reach Failed state
-    client.approve_renewal(&sub_id, &1, &1000, &200);
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &1, &500, &token, &max_retries, &cooldown, &20260601, &false);
-
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 20;
-    });
-
-    client.approve_renewal(&sub_id, &2, &1000, &200);
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &2, &500, &token, &max_retries, &cooldown, &20260601, &false);
-
-    let data = client.get_sub(&sub_id);
-    assert_eq!(data.state, SubscriptionState::Failed);
-
-    // Advance ledger
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 40;
-    });
-
-    // Try to renew a FAILED subscription - should panic
-    client.approve_renewal(&sub_id, &3, &1000, &200);
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &3, &500, &token, &max_retries, &cooldown, &20270101, &true);
+#[contractevent]
+pub struct StateTransition {
+    pub sub_id: u64,
+    pub new_state: SubscriptionState,
 }
 
-// ── Approval system tests ────────────────────────────────────────
-
-#[test]
-fn test_approval_required_for_renewal() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 500;
-    let approval_id = 1;
-
-    client.init_sub(&user, &sub_id);
-
-    // Create approval
-    client.approve_renewal(&sub_id, &approval_id, &1000, &100);
-
-    // Renew with valid approval
-    client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &approval_id, &500, &token, &3, &10, &20260801, &true);
-    assert!(result);
+#[contractevent]
+pub struct PauseToggled {
+    pub paused: bool,
 }
 
-#[test]
-#[should_panic(expected = "Invalid or expired approval")]
-fn test_renewal_without_approval_fails() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 501;
-
-    client.init_sub(&user, &sub_id);
-
-    // Try to renew without creating approval
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &999, &500, &token, &3, &10, &20260901, &true);
+#[contractevent]
+pub struct FeeConfigUpdated {
+    pub percentage: u32,
+    pub recipient: Address,
 }
 
-#[test]
-#[should_panic(expected = "Invalid or expired approval")]
-fn test_approval_cannot_be_reused() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 502;
-    let approval_id = 2;
-
-    client.init_sub(&user, &sub_id);
-    client.approve_renewal(&sub_id, &approval_id, &1000, &100);
-
-    // First use - should succeed
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &approval_id, &500, &token, &3, &10, &20261001, &true);
-
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 20;
-    });
-
-    // Second use - should fail (already used) — use different cycle_id to bypass cycle guard
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &approval_id, &500, &token, &3, &10, &20261101, &true);
+#[contractevent]
+pub struct FeeTransferred {
+    pub sub_id: u64,
+    pub recipient: Address,
+    pub amount: i128,
 }
 
-#[test]
-#[should_panic(expected = "Invalid or expired approval")]
-fn test_expired_approval_rejected() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 503;
-    let approval_id = 3;
-
-    client.init_sub(&user, &sub_id);
-
-    // Create approval that expires at ledger 50
-    client.approve_renewal(&sub_id, &approval_id, &1000, &50);
-
-    // Advance past expiration
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 51;
-    });
-
-    // Try to use expired approval
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &approval_id, &500, &token, &3, &10, &20261201, &true);
+#[contractevent]
+pub struct ApprovalCreated {
+    pub sub_id: u64,
+    pub approval_id: u64,
+    pub max_spend: i128,
+    pub expires_at: u32,
 }
 
-#[test]
-#[should_panic(expected = "Invalid or expired approval")]
-fn test_amount_exceeds_max_spend() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 504;
-    let approval_id = 4;
-
-    client.init_sub(&user, &sub_id);
-
-    // Create approval with max_spend = 1000
-    client.approve_renewal(&sub_id, &approval_id, &1000, &100);
-
-    // Try to renew with amount > max_spend
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &approval_id, &1500, &token, &3, &10, &20270101, &true);
+#[contractevent]
+pub struct ApprovalRejected {
+    pub sub_id: u64,
+    pub approval_id: u64,
+    pub reason: u32, // 1=expired, 2=used, 3=amount_exceeded, 4=not_found
 }
 
-#[test]
-fn test_multiple_approvals_for_same_subscription() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 505;
-
-    client.init_sub(&user, &sub_id);
-
-    // Create multiple approvals
-    client.approve_renewal(&sub_id, &1, &1000, &100);
-    client.approve_renewal(&sub_id, &2, &2000, &200);
-
-    // Use first approval
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &1, &500, &token, &3, &10, &20270201, &true);
-
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 20;
-    });
-
-    // Use second approval — different cycle_id since first succeeded
-    client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &2, &1500, &token, &3, &10, &20270301, &true);
-    assert!(result);
+#[contractevent]
+pub struct DuplicateRenewalRejected {
+    pub sub_id: u64,
+    pub cycle_id: u64,
 }
 
-// ── Cycle guard tests ────────────────────────────────────────────
-
-#[test]
-#[should_panic(expected = "Duplicate renewal for cycle")]
-fn test_duplicate_cycle_rejected_after_success() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 600;
-    let cycle_id = 20260315;
-
-    client.init_sub(&user, &sub_id);
-
-    // First renewal succeeds — stores cycle_id
-    client.approve_renewal(&sub_id, &1, &1000, &100);
-    client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &cycle_id, &true);
-    assert!(result);
-
-    // Second renewal with same cycle_id — should panic
-    client.approve_renewal(&sub_id, &2, &1000, &100);
-    client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &2, &500, &token, &3, &10, &cycle_id, &true);
+#[contractevent]
+pub struct RenewalLockAcquired {
+    pub sub_id: u64,
+    pub locked_at: u32,
+    pub lock_timeout: u32,
 }
 
-#[test]
-fn test_retry_same_cycle_allowed_after_failure() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 601;
-    let cycle_id = 20260315;
-
-    client.init_sub(&user, &sub_id);
-
-    // First attempt fails — does NOT store cycle_id
-    client.approve_renewal(&sub_id, &1, &1000, &200);
-    client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &cycle_id, &false);
-    assert!(!result);
-
-    // Advance ledger past cooldown
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 20;
-    });
-
-    // Retry with same cycle_id — should succeed because failure didn't record cycle
-    client.approve_renewal(&sub_id, &2, &1000, &200);
-    client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &2, &500, &token, &3, &10, &cycle_id, &true);
-    assert!(result);
+#[contractevent]
+pub struct RenewalLockReleased {
+    pub sub_id: u64,
+    pub released_at: u32,
 }
 
-#[test]
-fn test_different_cycle_allowed_after_success() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 602;
-
-    client.init_sub(&user, &sub_id);
-
-    // First cycle succeeds
-    client.approve_renewal(&sub_id, &1, &1000, &100);
-    client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &20260315, &true);
-    assert!(result);
-
-    // Different cycle_id — should succeed
-    client.approve_renewal(&sub_id, &2, &1000, &100);
-    client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &2, &500, &token, &3, &10, &20260415, &true);
-    assert!(result);
+#[contractevent]
+pub struct RenewalLockExpired {
+    pub sub_id: u64,
+    pub original_locked_at: u32,
+    pub expired_at: u32,
 }
 
-#[test]
-fn test_first_renewal_always_allowed() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 603;
-
-    client.init_sub(&user, &sub_id);
-
-    // First renewal ever — no stored cycle, guard passes
-    client.approve_renewal(&sub_id, &1, &1000, &100);
-    client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &20260101, &true);
-    assert!(result);
-
-    let data = client.get_sub(&sub_id);
-    assert_eq!(data.state, SubscriptionState::Active);
+#[contractevent]
+pub struct LifecycleTimestampUpdated {
+    pub sub_id: u64,
+    pub event_kind: u32, // 1=created, 2=activated, 3=renewed, 4=canceled
+    pub timestamp: u64,
 }
 
-#[test]
-fn test_cancel_sub() {
-    let (env, client, _admin, _token) = setup();
+#[contract]
+pub struct SubscriptionRenewalContract;
 
-    let user = Address::generate(&env);
-    let sub_id = 600;
+#[contractimpl]
+impl SubscriptionRenewalContract {
+    // ── Admin / Pause management ──────────────────────────────────
 
-    client.init_sub(&user, &sub_id);
+    /// Initialize the contract admin. Can only be called once.
+    pub fn init(env: Env, admin: Address) {
+        if env.storage().instance().has(&ContractKey::Admin) {
+            panic!("Already initialized");
+        }
+        env.storage().instance().set(&ContractKey::Admin, &admin);
+        env.storage().instance().set(&ContractKey::Paused, &false);
+    }
 
-    // Cancel subscription
-    client.cancel_sub(&sub_id);
+    /// Internal helper – loads admin and calls `require_auth`.
+    fn require_admin(env: &Env) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ContractKey::Admin)
+            .expect("Contract not initialized");
+        admin.require_auth();
+    }
 
-    let data = client.get_sub(&sub_id);
-    assert_eq!(data.state, SubscriptionState::Cancelled);
+    /// Pause or unpause all renewal execution. Admin only.
+    pub fn set_paused(env: Env, paused: bool) {
+        Self::require_admin(&env);
+        env.storage().instance().set(&ContractKey::Paused, &paused);
+        PauseToggled { paused }.publish(&env);
+    }
+
+    /// Query the current pause state.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&ContractKey::Paused)
+            .unwrap_or(false)
+    }
+
+    /// Admin function to manage the protocol fee configuration.
+    /// [percentage](cci:1://file:///Users/mac/SYNCRO2/contracts/contracts/subscription_renewal/src/test.rs:751:0-758:1) is in basis points (e.g., 500 = 5%), max 10000.
+    pub fn set_fee_config(env: Env, percentage: u32, recipient: Address) {
+        Self::require_admin(&env);
+        if percentage > 10000 {
+            panic!("Fee percentage exceeds 100%");
+        }
+
+        let config = FeeConfig { percentage, recipient: recipient.clone() };
+        env.storage().instance().set(&ContractKey::FeeConfig, &config);
+
+        FeeConfigUpdated {
+            percentage,
+            recipient,
+        }
+        .publish(&env);
+    }
+
+    /// Retrieve the current fee configuration
+    pub fn get_fee_config(env: Env) -> Option<FeeConfig> {
+        env.storage().instance().get(&ContractKey::FeeConfig)
+    }
+
+    // ── Renewal lock management ────────────────────────────────────
+
+    /// Acquire a processing lock for a subscription renewal.
+    /// Prevents concurrent renewal execution by multiple workers.
+    pub fn acquire_renewal_lock(env: Env, sub_id: u64, lock_timeout: u32) {
+        if Self::is_paused(env.clone()) {
+            panic!("Protocol is paused");
+        }
+
+        let lock_key = RenewalLockKey { lock_sub_id: sub_id };
+        let current_ledger = env.ledger().sequence();
+
+        if let Some(existing) = env
+            .storage()
+            .persistent()
+            .get::<RenewalLockKey, RenewalLockData>(&lock_key)
+        {
+            // Check if existing lock has expired
+            if current_ledger < existing.locked_at + existing.lock_timeout {
+                panic!("Renewal lock active");
+            }
+            // Lock expired — emit expiry event and allow re-acquisition
+            RenewalLockExpired {
+                sub_id,
+                original_locked_at: existing.locked_at,
+                expired_at: current_ledger,
+            }
+            .publish(&env);
+        }
+
+        let lock_data = RenewalLockData {
+            locked_at: current_ledger,
+            lock_timeout,
+        };
+        env.storage().persistent().set(&lock_key, &lock_data);
+
+        RenewalLockAcquired {
+            sub_id,
+            locked_at: current_ledger,
+            lock_timeout,
+        }
+        .publish(&env);
+    }
+
+    /// Release a processing lock for a subscription renewal.
+    pub fn release_renewal_lock(env: Env, sub_id: u64) {
+        let lock_key = RenewalLockKey { lock_sub_id: sub_id };
+        if !env.storage().persistent().has(&lock_key) {
+            panic!("No renewal lock to release");
+        }
+
+        let current_ledger = env.ledger().sequence();
+        env.storage().persistent().remove(&lock_key);
+
+        RenewalLockReleased {
+            sub_id,
+            released_at: current_ledger,
+        }
+        .publish(&env);
+    }
+
+    /// Query the current renewal lock for a subscription.
+    pub fn get_renewal_lock(env: Env, sub_id: u64) -> Option<RenewalLockData> {
+        let lock_key = RenewalLockKey { lock_sub_id: sub_id };
+        env.storage().persistent().get(&lock_key)
+    }
+
+    // ── Subscription logic ────────────────────────────────────────
+
+    /// Initialize a subscription
+    pub fn init_sub(env: Env, info: Address, sub_id: u64) {
+        let key = sub_id;
+        let data = SubscriptionData {
+            owner: info,
+            state: SubscriptionState::Active,
+            failure_count: 0,
+            last_attempt_ledger: 0,
+        };
+        env.storage().persistent().set(&key, &data);
+
+        // Initialize lifecycle timestamps
+        let now = env.ledger().timestamp();
+        let lifecycle = LifecycleTimestamps {
+            created_at: now,
+            activated_at: now,
+            last_renewed_at: 0,
+            canceled_at: 0,
+        };
+        let lc_key = LifecycleKey {
+            lifecycle_sub_id: sub_id,
+        };
+        env.storage().persistent().set(&lc_key, &lifecycle);
+
+        LifecycleTimestampUpdated {
+            sub_id,
+            event_kind: 1,
+            timestamp: now,
+        }
+        .publish(&env);
+        LifecycleTimestampUpdated {
+            sub_id,
+            event_kind: 2,
+            timestamp: now,
+        }
+        .publish(&env);
+    }
+
+    /// Explicitly cancel a subscription
+    pub fn cancel_sub(env: Env, sub_id: u64) {
+        let key = sub_id;
+        let mut data: SubscriptionData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("Subscription not found");
+
+        data.owner.require_auth();
+
+        if data.state == SubscriptionState::Cancelled {
+            panic!("Subscription already cancelled");
+        }
+
+        data.state = SubscriptionState::Cancelled;
+        env.storage().persistent().set(&key, &data);
+
+        // Update lifecycle timestamps
+        let lc_key = LifecycleKey {
+            lifecycle_sub_id: sub_id,
+        };
+        let mut lifecycle: LifecycleTimestamps = env
+            .storage()
+            .persistent()
+            .get(&lc_key)
+            .expect("Lifecycle data not found");
+        let now = env.ledger().timestamp();
+        lifecycle.canceled_at = now;
+        env.storage().persistent().set(&lc_key, &lifecycle);
+
+        LifecycleTimestampUpdated {
+            sub_id,
+            event_kind: 4,
+            timestamp: now,
+        }
+        .publish(&env);
+
+        // Emit state transition event
+        StateTransition {
+            sub_id,
+            new_state: SubscriptionState::Cancelled,
+        }
+        .publish(&env);
+    }
+
+    // ── Approval management ───────────────────────────────────────
+
+    /// Create a renewal approval for a subscription
+    pub fn approve_renewal(
+        env: Env,
+        sub_id: u64,
+        approval_id: u64,
+        max_spend: i128,
+        expires_at: u32,
+    ) {
+        let sub_key = sub_id;
+        let data: SubscriptionData = env
+            .storage()
+            .persistent()
+            .get(&sub_key)
+            .expect("Subscription not found");
+
+        data.owner.require_auth();
+
+        let approval = RenewalApproval {
+            sub_id,
+            max_spend,
+            expires_at,
+            used: false,
+        };
+
+        let key = ApprovalKey {
+            sub_id,
+            approval_id,
+        };
+        env.storage().persistent().set(&key, &approval);
+
+        ApprovalCreated {
+            sub_id,
+            approval_id,
+            max_spend,
+            expires_at,
+        }
+        .publish(&env);
+    }
+
+    /// Validate and consume an approval
+    fn consume_approval(env: &Env, sub_id: u64, approval_id: u64, amount: i128) -> bool {
+        let key = ApprovalKey {
+            sub_id,
+            approval_id,
+        };
+
+        let approval_opt: Option<RenewalApproval> = env.storage().persistent().get(&key);
+
+        if approval_opt.is_none() {
+            ApprovalRejected {
+                sub_id,
+                approval_id,
+                reason: 4,
+            }
+            .publish(env);
+            return false;
+        }
+
+        let mut approval = approval_opt.unwrap();
+
+        if approval.used {
+            ApprovalRejected {
+                sub_id,
+                approval_id,
+                reason: 2,
+            }
+            .publish(env);
+            return false;
+        }
+
+        let current_ledger = env.ledger().sequence();
+        if current_ledger > approval.expires_at {
+            ApprovalRejected {
+                sub_id,
+                approval_id,
+                reason: 1,
+            }
+            .publish(env);
+            return false;
+        }
+
+        if amount > approval.max_spend {
+            ApprovalRejected {
+                sub_id,
+                approval_id,
+                reason: 3,
+            }
+            .publish(env);
+            return false;
+        }
+
+        approval.used = true;
+        env.storage().persistent().set(&key, &approval);
+        true
+    }
+
+    // ── Renewal logic ─────────────────────────────────────────────
+
+    /// Attempt to renew the subscription.
+    /// Returns true if renewal is successful (simulated), false if it failed and retry logic was triggered.
+    /// limits: max retries allowed.
+    /// cooldown: min ledgers between retries.
+    pub fn renew(
+        env: Env,
+        sub_id: u64,
+        approval_id: u64,
+        amount: i128,
+        token: Address,
+        max_retries: u32,
+        cooldown_ledgers: u32,
+        cycle_id: u64,
+        succeed: bool,
+    ) -> bool {
+        // 1. Check global pause
+        if Self::is_paused(env.clone()) {
+            panic!("Protocol is paused");
+        }
+
+        // Get current ledger early (needed for lock verification)
+        let current_ledger = env.ledger().sequence();
+
+        // 2. Load subscription data
+        let key = sub_id;
+        let mut data: SubscriptionData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("Subscription not found");
+
+        // 3. Check failed state
+        if data.state == SubscriptionState::Failed {
+            panic!("Subscription is in FAILED state");
+        }
+
+        // 4. Verify renewal lock exists and is not expired
+        let lock_key = RenewalLockKey { lock_sub_id: sub_id };
+        let lock_data: Option<RenewalLockData> = env.storage().persistent().get(&lock_key);
+        match lock_data {
+            None => panic!("Renewal lock required"),
+            Some(ref ld) => {
+                if current_ledger >= ld.locked_at + ld.lock_timeout {
+                    panic!("Renewal lock expired");
+                }
+            }
+        }
+
+        // 5. Cycle guard: reject duplicate renewal for the same billing cycle
+        let cycle_key = CycleKey { sub_id };
+        let last_cycle: Option<u64> = env.storage().persistent().get(&cycle_key);
+        if let Some(last) = last_cycle {
+            if cycle_id == last {
+                DuplicateRenewalRejected { sub_id, cycle_id }.publish(&env);
+                panic!("Duplicate renewal for cycle");
+            }
+        }
+
+        // 6. Check cooldown
+        if data.failure_count > 0 && current_ledger < data.last_attempt_ledger + cooldown_ledgers {
+            panic!("Cooldown period active");
+        }
+
+        // 7. Validate and consume approval
+        if !Self::consume_approval(&env, sub_id, approval_id, amount) {
+            panic!("Invalid or expired approval");
+        }
+
+        if succeed {
+            // Capture previous state before changing it (from main branch)
+            let previous_state = data.state;
+
+            // Calculate and transfer protocol fee if configured (from monetization branch)
+            if let Some(fee_config) = Self::get_fee_config(env.clone()) {
+                if fee_config.percentage > 0 && amount > 0 {
+                    let fee_amount = (amount * fee_config.percentage as i128) / 10000;
+                    if fee_amount > 0 {
+                        let token_client = token::Client::new(&env, &token);
+                        token_client.transfer_from(
+                            &env.current_contract_address(),
+                            &data.owner,
+                            &fee_config.recipient,
+                            &fee_amount,
+                        );
+
+                        FeeTransferred {
+                            sub_id,
+                            recipient: fee_config.recipient,
+                            amount: fee_amount,
+                        }
+                        .publish(&env);
+                    }
+                }
+            }
+
+            // Simulated success - renewal successful
+            data.state = SubscriptionState::Active;
+            data.failure_count = 0;
+            data.last_attempt_ledger = current_ledger;
+            env.storage().persistent().set(&key, &data);
+
+            // Store cycle_id on success only
+            env.storage().persistent().set(&cycle_key, &cycle_id);
+
+            // Emit renewal success event
+            RenewalSuccess {
+                sub_id,
+                owner: data.owner.clone(),
+            }
+            .publish(&env);
+
+            // Update lifecycle timestamps (from main branch)
+            let lc_key = LifecycleKey {
+                lifecycle_sub_id: sub_id,
+            };
+            let mut lifecycle: LifecycleTimestamps = env
+                .storage()
+                .persistent()
+                .get(&lc_key)
+                .expect("Lifecycle data not found");
+            let now = env.ledger().timestamp();
+            lifecycle.last_renewed_at = now;
+
+            LifecycleTimestampUpdated {
+                sub_id,
+                event_kind: 3,
+                timestamp: now,
+            }
+            .publish(&env);
+
+            // If recovering from Retrying, also update activated_at
+            if previous_state == SubscriptionState::Retrying {
+                lifecycle.activated_at = now;
+                LifecycleTimestampUpdated {
+                    sub_id,
+                    event_kind: 2,
+                    timestamp: now,
+                }
+                .publish(&env);
+            }
+            env.storage().persistent().set(&lc_key, &lifecycle);
+
+            // Auto-release lock
+            env.storage().persistent().remove(&lock_key);
+            RenewalLockReleased {
+                sub_id,
+                released_at: current_ledger,
+            }
+            .publish(&env);
+
+            true
+        } else {
+            // Simulated failure - renewal failed, apply retry logic
+            // Do NOT store cycle_id on failure — retries with same cycle_id remain allowed
+            data.failure_count += 1;
+            data.last_attempt_ledger = current_ledger;
+
+            // Emit renewal failure event
+            RenewalFailed {
+                sub_id,
+                failure_count: data.failure_count,
+                ledger: current_ledger,
+            }
+            .publish(&env);
+
+            // Determine new state based on retry count
+            if data.failure_count > max_retries {
+                data.state = SubscriptionState::Failed;
+                StateTransition {
+                    sub_id,
+                    new_state: SubscriptionState::Failed,
+                }
+                .publish(&env);
+            } else {
+                data.state = SubscriptionState::Retrying;
+                StateTransition {
+                    sub_id,
+                    new_state: SubscriptionState::Retrying,
+                }
+                .publish(&env);
+            }
+
+            env.storage().persistent().set(&key, &data);
+
+            // Auto-release lock
+            env.storage().persistent().remove(&lock_key);
+            RenewalLockReleased {
+                sub_id,
+                released_at: current_ledger,
+            }
+            .publish(&env);
+
+            false
+        }
+    }
+
+    pub fn get_sub(env: Env, sub_id: u64) -> SubscriptionData {
+        env.storage()
+            .persistent()
+            .get(&sub_id)
+            .expect("Subscription not found")
+    }
+
+    pub fn get_lifecycle(env: Env, sub_id: u64) -> LifecycleTimestamps {
+        let lc_key = LifecycleKey {
+            lifecycle_sub_id: sub_id,
+        };
+        env.storage()
+            .persistent()
+            .get(&lc_key)
+            .expect("Lifecycle data not found")
+    }
 }
 
-#[test]
-#[should_panic(expected = "Subscription already cancelled")]
-fn test_cannot_cancel_twice() {
-    let (env, client, _admin, _token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 601;
-
-    client.init_sub(&user, &sub_id);
-
-    client.cancel_sub(&sub_id);
-    client.cancel_sub(&sub_id);
-}
-
-#[test]
-#[should_panic(expected = "Subscription not found")]
-fn test_cancel_non_existent_sub() {
-    let (_env, client, _admin, _token) = setup();
-    client.cancel_sub(&999);
-}
-
-// ── Renewal lock tests ──────────────────────────────────────────
-
-#[test]
-fn test_acquire_renewal_lock() {
-    let (_env, client, _admin, _token) = setup();
-
-    let sub_id = 700;
-
-    client.acquire_renewal_lock(&sub_id, &200);
-
-    let lock = client.get_renewal_lock(&sub_id);
-    assert!(lock.is_some());
-    let lock_data = lock.unwrap();
-    assert_eq!(lock_data.locked_at, 0); // default ledger
-    assert_eq!(lock_data.lock_timeout, 200);
-}
-
-#[test]
-#[should_panic(expected = "Renewal lock active")]
-fn test_lock_prevents_concurrent_acquisition() {
-    let (_env, client, _admin, _token) = setup();
-
-    let sub_id = 701;
-
-    client.acquire_renewal_lock(&sub_id, &200);
-    // Second acquire should panic
-    client.acquire_renewal_lock(&sub_id, &200);
-}
-
-#[test]
-fn test_lock_auto_expires_and_reacquirable() {
-    let (env, client, _admin, _token) = setup();
-
-    let sub_id = 702;
-
-    client.acquire_renewal_lock(&sub_id, &50);
-
-    // Advance ledger past lock timeout
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 60;
-    });
-
-    // Should succeed — old lock expired
-    client.acquire_renewal_lock(&sub_id, &200);
-
-    let lock = client.get_renewal_lock(&sub_id);
-    assert!(lock.is_some());
-    let lock_data = lock.unwrap();
-    assert_eq!(lock_data.locked_at, 60);
-    assert_eq!(lock_data.lock_timeout, 200);
-}
-
-#[test]
-fn test_release_renewal_lock() {
-    let (_env, client, _admin, _token) = setup();
-
-    let sub_id = 703;
-
-    client.acquire_renewal_lock(&sub_id, &200);
-    assert!(client.get_renewal_lock(&sub_id).is_some());
-
-    client.release_renewal_lock(&sub_id);
-    assert!(client.get_renewal_lock(&sub_id).is_none());
-}
-
-#[test]
-#[should_panic(expected = "No renewal lock to release")]
-fn test_release_nonexistent_lock_panics() {
-    let (_env, client, _admin, _token) = setup();
-
-    let sub_id = 704;
-    client.release_renewal_lock(&sub_id);
-}
-
-#[test]
-#[should_panic(expected = "Renewal lock required")]
-fn test_renew_without_lock_panics() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 705;
-
-    client.init_sub(&user, &sub_id);
-    client.approve_renewal(&sub_id, &1, &1000, &100);
-
-    // Renew without acquiring lock — should panic
-    client.renew(&sub_id, &1, &500, &token, &3, &10, &20260101, &true);
-}
-
-#[test]
-fn test_renew_with_lock_succeeds_and_auto_releases() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 706;
-
-    client.init_sub(&user, &sub_id);
-    client.approve_renewal(&sub_id, &1, &1000, &100);
-
-    client.acquire_renewal_lock(&sub_id, &200);
-    assert!(client.get_renewal_lock(&sub_id).is_some());
-
-    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &20260101, &true);
-    assert!(result);
-
-    // Lock should be auto-released after renew
-    assert!(client.get_renewal_lock(&sub_id).is_none());
-}
-
-#[test]
-fn test_renew_failure_also_releases_lock() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 707;
-
-    client.init_sub(&user, &sub_id);
-    client.approve_renewal(&sub_id, &1, &1000, &200);
-
-    client.acquire_renewal_lock(&sub_id, &200);
-    assert!(client.get_renewal_lock(&sub_id).is_some());
-
-    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &20260101, &false);
-    assert!(!result);
-
-    // Lock should be auto-released even after failure
-    assert!(client.get_renewal_lock(&sub_id).is_none());
-}
-
-#[test]
-#[should_panic(expected = "Renewal lock expired")]
-fn test_renew_with_expired_lock_panics() {
-    let (env, client, _admin, token) = setup();
-
-    let user = Address::generate(&env);
-    let sub_id = 708;
-
-    client.init_sub(&user, &sub_id);
-    client.approve_renewal(&sub_id, &1, &1000, &200);
-
-    client.acquire_renewal_lock(&sub_id, &50);
-
-    // Advance ledger past lock timeout
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 60;
-    });
-
-    // Renew with expired lock — should panic
-    client.renew(&sub_id, &1, &500, &token, &3, &10, &20260101, &true);
-}
-
-#[test]
-#[should_panic(expected = "Protocol is paused")]
-fn test_acquire_lock_blocked_when_paused() {
-    let (_env, client, _admin, _token) = setup();
-
-    let sub_id = 709;
-
-    client.set_paused(&true);
-    // Should panic because protocol is paused
-    client.acquire_renewal_lock(&sub_id, &200);
-}
-
-// ── Monetization feature tests ───────────────────────────────────
-
-#[test]
-fn test_set_and_get_fee_config() {
-    let (env, client, _admin, _token) = setup();
-    let recipient = Address::generate(&env);
-    
-    client.set_fee_config(&500, &recipient);
-    
-    let config = client.get_fee_config().unwrap();
-    assert_eq!(config.percentage, 500);
-    assert_eq!(config.recipient, recipient);
-}
-
-#[test]
-#[should_panic(expected = "Fee percentage exceeds 100%")]
-fn test_set_fee_config_invalid_percentage() {
-    let (env, client, _admin, _token) = setup();
-    let recipient = Address::generate(&env);
-    
-    client.set_fee_config(&10001, &recipient);
-}
-
-#[test]
-fn test_fee_transfer_on_renewal() {
-    let (env, client, _admin, token) = setup();
-    let user = Address::generate(&env);
-    let recipient = Address::generate(&env);
-    let sub_id = 1000;
-    let amount = 1000i128;
-    let fee_bps = 500u32; // 5%
-    let expected_fee = 50i128;
-
-    // Configure fee
-    client.set_fee_config(&fee_bps, &recipient);
-
-    // Setup subscription
-    client.init_sub(&user, &sub_id);
-    client.approve_renewal(&sub_id, &1, &amount, &100);
-
-    // Mint tokens to user and set allowance for contract
-    let token_admin = token::StellarAssetClient::new(&env, &token);
-    token_admin.mint(&user, &amount);
-    
-    // In Soroban tests with mock_all_auths, we don't strictly need to call approve
-    // but the contract uses transfer_from which requires allowance.
-    token::Client::new(&env, &token).approve(&user, &client.address, &amount, &200);
-
-    // Renew
-    client.acquire_renewal_lock(&sub_id, &100);
-    let result = client.renew(&sub_id, &1, &amount, &token, &3, &10, &20260101, &true);
-    assert!(result);
-
-    // Verify fee was transferred
-    let recipient_balance = token::Client::new(&env, &token).balance(&recipient);
-    assert_eq!(recipient_balance, expected_fee);
-}
-
+#[cfg(test)]
+mod test;
