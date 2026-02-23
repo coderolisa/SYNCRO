@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contractevent, contractimpl, contracttype, token, Address, Env};
 
 /// Storage keys for contract-level state (admin, pause flag).
 #[contracttype]
@@ -7,6 +7,7 @@ use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, 
 enum ContractKey {
     Admin,
     Paused,
+    FeeConfig,
 }
 
 /// Storage key for approvals: (sub_id, approval_id)
@@ -59,6 +60,14 @@ pub enum SubscriptionState {
     Cancelled,
 }
 
+/// Fee configuration set by the admin
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeConfig {
+    pub percentage: u32,
+    pub recipient: Address,
+}
+
 /// Core subscription data stored on-chain
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -92,6 +101,19 @@ pub struct StateTransition {
 #[contractevent]
 pub struct PauseToggled {
     pub paused: bool,
+}
+
+#[contractevent]
+pub struct FeeConfigUpdated {
+    pub percentage: u32,
+    pub recipient: Address,
+}
+
+#[contractevent]
+pub struct FeeTransferred {
+    pub sub_id: u64,
+    pub recipient: Address,
+    pub amount: i128,
 }
 
 #[contractevent]
@@ -174,6 +196,29 @@ impl SubscriptionRenewalContract {
             .instance()
             .get(&ContractKey::Paused)
             .unwrap_or(false)
+    }
+
+    /// Admin function to manage the protocol fee configuration.
+    /// `percentage` is in basis points (e.g., 500 = 5%), max 10000.
+    pub fn set_fee_config(env: Env, percentage: u32, recipient: Address) {
+        Self::require_admin(&env);
+        if percentage > 10000 {
+            panic!("Fee percentage exceeds 100%");
+        }
+
+        let config = FeeConfig { percentage, recipient: recipient.clone() };
+        env.storage().instance().set(&ContractKey::FeeConfig, &config);
+
+        FeeConfigUpdated {
+            percentage,
+            recipient,
+        }
+        .publish(&env);
+    }
+
+    /// Retrieve the current fee configuration
+    pub fn get_fee_config(env: Env) -> Option<FeeConfig> {
+        env.storage().instance().get(&ContractKey::FeeConfig)
     }
 
     // ── Renewal lock management ────────────────────────────────────
@@ -392,6 +437,7 @@ impl SubscriptionRenewalContract {
         sub_id: u64,
         approval_id: u64,
         amount: i128,
+        token: Address,
         max_retries: u32,
         cooldown_ledgers: u32,
         cycle_id: u64,
@@ -451,6 +497,29 @@ impl SubscriptionRenewalContract {
         }
 
         if succeed {
+            // Calculate and transfer protocol fee if configured
+            if let Some(fee_config) = Self::get_fee_config(env.clone()) {
+                if fee_config.percentage > 0 && amount > 0 {
+                    let fee_amount = (amount * fee_config.percentage as i128) / 10000;
+                    if fee_amount > 0 {
+                        let token_client = token::Client::new(&env, &token);
+                        token_client.transfer_from(
+                            &env.current_contract_address(),
+                            &data.owner,
+                            &fee_config.recipient,
+                            &fee_amount,
+                        );
+
+                        FeeTransferred {
+                            sub_id,
+                            recipient: fee_config.recipient,
+                            amount: fee_amount,
+                        }
+                        .publish(&env);
+                    }
+                }
+            }
+
             // Simulated success - renewal successful
             data.state = SubscriptionState::Active;
             data.failure_count = 0;

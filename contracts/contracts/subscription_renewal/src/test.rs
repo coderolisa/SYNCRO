@@ -4,8 +4,8 @@ use soroban_sdk::{
     Address, Env,
 };
 
-/// Helper: creates env, registers contract, initializes admin, returns (client, admin).
-fn setup() -> (Env, SubscriptionRenewalContractClient<'static>, Address) {
+/// Helper: creates env, registers contract, initializes admin, returns (client, admin, token).
+fn setup() -> (Env, SubscriptionRenewalContractClient<'static>, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -15,20 +15,23 @@ fn setup() -> (Env, SubscriptionRenewalContractClient<'static>, Address) {
     let admin = Address::generate(&env);
     client.init(&admin);
 
-    (env, client, admin)
+    // Register a mock token (Stellar Asset Contract)
+    let token = env.register_stellar_asset_contract(admin.clone());
+
+    (env, client, admin, token)
 }
 
 // ── Pause feature tests ──────────────────────────────────────────
 
 #[test]
 fn test_default_not_paused() {
-    let (_env, client, _admin) = setup();
+    let (_env, client, _admin, _token) = setup();
     assert!(!client.is_paused());
 }
 
 #[test]
 fn test_admin_can_pause() {
-    let (_env, client, _admin) = setup();
+    let (_env, client, _admin, _token) = setup();
 
     client.set_paused(&true);
     assert!(client.is_paused());
@@ -36,7 +39,7 @@ fn test_admin_can_pause() {
 
 #[test]
 fn test_admin_can_unpause() {
-    let (_env, client, _admin) = setup();
+    let (_env, client, _admin, _token) = setup();
 
     client.set_paused(&true);
     assert!(client.is_paused());
@@ -48,7 +51,7 @@ fn test_admin_can_unpause() {
 #[test]
 #[should_panic(expected = "Protocol is paused")]
 fn test_renew_blocked_when_paused() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 100;
@@ -59,12 +62,12 @@ fn test_renew_blocked_when_paused() {
     client.set_paused(&true);
 
     // Should panic because the protocol is paused
-    client.renew(&sub_id, &1, &500, &3, &10, &20260101, &true);
+    client.renew(&sub_id, &1, &500, &token, &3, &10, &20260101, &true);
 }
 
 #[test]
 fn test_renew_works_after_unpause() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 101;
@@ -78,14 +81,14 @@ fn test_renew_works_after_unpause() {
 
     // Should succeed now
     client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &3, &10, &20260101, &true);
+    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &20260101, &true);
     assert!(result);
 }
 
 #[test]
 #[should_panic(expected = "Already initialized")]
 fn test_cannot_init_twice() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, _token) = setup();
     let another = Address::generate(&env);
     client.init(&another);
 }
@@ -94,7 +97,7 @@ fn test_cannot_init_twice() {
 
 #[test]
 fn test_renewal_success() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 123;
@@ -103,7 +106,7 @@ fn test_renewal_success() {
     client.approve_renewal(&sub_id, &1, &1000, &100);
 
     client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &3, &10, &20260115, &true);
+    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &20260115, &true);
     assert!(result);
 
     let data = client.get_sub(&sub_id);
@@ -113,7 +116,7 @@ fn test_renewal_success() {
 
 #[test]
 fn test_retry_logic() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 456;
@@ -125,7 +128,7 @@ fn test_retry_logic() {
     // First failure (cycle_id same for retries — allowed because failure doesn't store cycle)
     client.approve_renewal(&sub_id, &1, &1000, &200);
     client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &max_retries, &cooldown, &20260201, &false);
+    let result = client.renew(&sub_id, &1, &500, &token, &max_retries, &cooldown, &20260201, &false);
     assert!(!result);
 
     let data = client.get_sub(&sub_id);
@@ -140,7 +143,7 @@ fn test_retry_logic() {
     // renewal attempt but fail again (ledger 100)
     client.approve_renewal(&sub_id, &2, &1000, &200);
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &2, &500, &max_retries, &cooldown, &20260201, &false);
+    client.renew(&sub_id, &2, &500, &token, &max_retries, &cooldown, &20260201, &false);
 
     // Advance past cooldown
     env.ledger().with_mut(|li| {
@@ -150,7 +153,7 @@ fn test_retry_logic() {
     // Third failure (count becomes 3 > max_retries 2) -> Should fail
     client.approve_renewal(&sub_id, &3, &1000, &200);
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &3, &500, &max_retries, &cooldown, &20260201, &false);
+    client.renew(&sub_id, &3, &500, &token, &max_retries, &cooldown, &20260201, &false);
 
     let data = client.get_sub(&sub_id);
     assert_eq!(data.state, SubscriptionState::Failed);
@@ -160,7 +163,7 @@ fn test_retry_logic() {
 #[test]
 #[should_panic(expected = "Cooldown period active")]
 fn test_cooldown_enforcement() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 789;
@@ -170,17 +173,17 @@ fn test_cooldown_enforcement() {
     // Fail once
     client.approve_renewal(&sub_id, &1, &1000, &100);
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &1, &500, &3, &10, &20260301, &false);
+    client.renew(&sub_id, &1, &500, &token, &3, &10, &20260301, &false);
 
     // Try again immediately (cooldown not met)
     client.approve_renewal(&sub_id, &2, &1000, &100);
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &2, &500, &3, &10, &20260301, &false);
+    client.renew(&sub_id, &2, &500, &token, &3, &10, &20260301, &false);
 }
 
 #[test]
 fn test_event_emission_on_success() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 999;
@@ -190,7 +193,7 @@ fn test_event_emission_on_success() {
 
     // Successful renewal should emit RenewalSuccess event
     client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &3, &10, &20260315, &true);
+    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &20260315, &true);
     assert!(result);
 
     // Verify event was emitted by checking subscription data
@@ -201,7 +204,7 @@ fn test_event_emission_on_success() {
 
 #[test]
 fn test_zero_max_retries() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 111;
@@ -212,7 +215,7 @@ fn test_zero_max_retries() {
 
     // First failure with max_retries = 0 should immediately fail
     client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &max_retries, &10, &20260401, &false);
+    let result = client.renew(&sub_id, &1, &500, &token, &max_retries, &10, &20260401, &false);
     assert!(!result);
 
     let data = client.get_sub(&sub_id);
@@ -222,7 +225,7 @@ fn test_zero_max_retries() {
 
 #[test]
 fn test_multiple_failures_then_success() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 222;
@@ -234,7 +237,7 @@ fn test_multiple_failures_then_success() {
     // First failure
     client.approve_renewal(&sub_id, &1, &1000, &200);
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &1, &500, &max_retries, &cooldown, &20260501, &false);
+    client.renew(&sub_id, &1, &500, &token, &max_retries, &cooldown, &20260501, &false);
     let data = client.get_sub(&sub_id);
     assert_eq!(data.state, SubscriptionState::Retrying);
     assert_eq!(data.failure_count, 1);
@@ -247,7 +250,7 @@ fn test_multiple_failures_then_success() {
     // Second failure
     client.approve_renewal(&sub_id, &2, &1000, &200);
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &2, &500, &max_retries, &cooldown, &20260501, &false);
+    client.renew(&sub_id, &2, &500, &token, &max_retries, &cooldown, &20260501, &false);
     let data = client.get_sub(&sub_id);
     assert_eq!(data.state, SubscriptionState::Retrying);
     assert_eq!(data.failure_count, 2);
@@ -260,7 +263,7 @@ fn test_multiple_failures_then_success() {
     // Now succeed - should reset failure count and return to Active
     client.approve_renewal(&sub_id, &3, &1000, &200);
     client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &3, &500, &max_retries, &cooldown, &20260501, &true);
+    let result = client.renew(&sub_id, &3, &500, &token, &max_retries, &cooldown, &20260501, &true);
     assert!(result);
 
     let data = client.get_sub(&sub_id);
@@ -271,7 +274,7 @@ fn test_multiple_failures_then_success() {
 #[test]
 #[should_panic(expected = "Subscription is in FAILED state")]
 fn test_cannot_renew_failed_subscription() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 333;
@@ -283,7 +286,7 @@ fn test_cannot_renew_failed_subscription() {
     // Fail twice to reach Failed state
     client.approve_renewal(&sub_id, &1, &1000, &200);
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &1, &500, &max_retries, &cooldown, &20260601, &false);
+    client.renew(&sub_id, &1, &500, &token, &max_retries, &cooldown, &20260601, &false);
 
     env.ledger().with_mut(|li| {
         li.sequence_number = 20;
@@ -291,7 +294,7 @@ fn test_cannot_renew_failed_subscription() {
 
     client.approve_renewal(&sub_id, &2, &1000, &200);
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &2, &500, &max_retries, &cooldown, &20260601, &false);
+    client.renew(&sub_id, &2, &500, &token, &max_retries, &cooldown, &20260601, &false);
 
     let data = client.get_sub(&sub_id);
     assert_eq!(data.state, SubscriptionState::Failed);
@@ -304,14 +307,14 @@ fn test_cannot_renew_failed_subscription() {
     // Try to renew a FAILED subscription - should panic
     client.approve_renewal(&sub_id, &3, &1000, &200);
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &3, &500, &max_retries, &cooldown, &20260701, &true);
+    client.renew(&sub_id, &3, &500, &token, &max_retries, &cooldown, &20270101, &true);
 }
 
 // ── Approval system tests ────────────────────────────────────────
 
 #[test]
 fn test_approval_required_for_renewal() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 500;
@@ -324,14 +327,14 @@ fn test_approval_required_for_renewal() {
 
     // Renew with valid approval
     client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &approval_id, &500, &3, &10, &20260801, &true);
+    let result = client.renew(&sub_id, &approval_id, &500, &token, &3, &10, &20260801, &true);
     assert!(result);
 }
 
 #[test]
 #[should_panic(expected = "Invalid or expired approval")]
 fn test_renewal_without_approval_fails() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 501;
@@ -340,13 +343,13 @@ fn test_renewal_without_approval_fails() {
 
     // Try to renew without creating approval
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &999, &500, &3, &10, &20260901, &true);
+    client.renew(&sub_id, &999, &500, &token, &3, &10, &20260901, &true);
 }
 
 #[test]
 #[should_panic(expected = "Invalid or expired approval")]
 fn test_approval_cannot_be_reused() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 502;
@@ -357,7 +360,7 @@ fn test_approval_cannot_be_reused() {
 
     // First use - should succeed
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &approval_id, &500, &3, &10, &20261001, &true);
+    client.renew(&sub_id, &approval_id, &500, &token, &3, &10, &20261001, &true);
 
     env.ledger().with_mut(|li| {
         li.sequence_number = 20;
@@ -365,13 +368,13 @@ fn test_approval_cannot_be_reused() {
 
     // Second use - should fail (already used) — use different cycle_id to bypass cycle guard
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &approval_id, &500, &3, &10, &20261101, &true);
+    client.renew(&sub_id, &approval_id, &500, &token, &3, &10, &20261101, &true);
 }
 
 #[test]
 #[should_panic(expected = "Invalid or expired approval")]
 fn test_expired_approval_rejected() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 503;
@@ -389,13 +392,13 @@ fn test_expired_approval_rejected() {
 
     // Try to use expired approval
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &approval_id, &500, &3, &10, &20261201, &true);
+    client.renew(&sub_id, &approval_id, &500, &token, &3, &10, &20261201, &true);
 }
 
 #[test]
 #[should_panic(expected = "Invalid or expired approval")]
 fn test_amount_exceeds_max_spend() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 504;
@@ -408,12 +411,12 @@ fn test_amount_exceeds_max_spend() {
 
     // Try to renew with amount > max_spend
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &approval_id, &1500, &3, &10, &20270101, &true);
+    client.renew(&sub_id, &approval_id, &1500, &token, &3, &10, &20270101, &true);
 }
 
 #[test]
 fn test_multiple_approvals_for_same_subscription() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 505;
@@ -426,7 +429,7 @@ fn test_multiple_approvals_for_same_subscription() {
 
     // Use first approval
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &1, &500, &3, &10, &20270201, &true);
+    client.renew(&sub_id, &1, &500, &token, &3, &10, &20270201, &true);
 
     env.ledger().with_mut(|li| {
         li.sequence_number = 20;
@@ -434,7 +437,7 @@ fn test_multiple_approvals_for_same_subscription() {
 
     // Use second approval — different cycle_id since first succeeded
     client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &2, &1500, &3, &10, &20270301, &true);
+    let result = client.renew(&sub_id, &2, &1500, &token, &3, &10, &20270301, &true);
     assert!(result);
 }
 
@@ -443,7 +446,7 @@ fn test_multiple_approvals_for_same_subscription() {
 #[test]
 #[should_panic(expected = "Duplicate renewal for cycle")]
 fn test_duplicate_cycle_rejected_after_success() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 600;
@@ -454,18 +457,18 @@ fn test_duplicate_cycle_rejected_after_success() {
     // First renewal succeeds — stores cycle_id
     client.approve_renewal(&sub_id, &1, &1000, &100);
     client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &3, &10, &cycle_id, &true);
+    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &cycle_id, &true);
     assert!(result);
 
     // Second renewal with same cycle_id — should panic
     client.approve_renewal(&sub_id, &2, &1000, &100);
     client.acquire_renewal_lock(&sub_id, &200);
-    client.renew(&sub_id, &2, &500, &3, &10, &cycle_id, &true);
+    client.renew(&sub_id, &2, &500, &token, &3, &10, &cycle_id, &true);
 }
 
 #[test]
 fn test_retry_same_cycle_allowed_after_failure() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 601;
@@ -476,7 +479,7 @@ fn test_retry_same_cycle_allowed_after_failure() {
     // First attempt fails — does NOT store cycle_id
     client.approve_renewal(&sub_id, &1, &1000, &200);
     client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &3, &10, &cycle_id, &false);
+    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &cycle_id, &false);
     assert!(!result);
 
     // Advance ledger past cooldown
@@ -487,13 +490,13 @@ fn test_retry_same_cycle_allowed_after_failure() {
     // Retry with same cycle_id — should succeed because failure didn't record cycle
     client.approve_renewal(&sub_id, &2, &1000, &200);
     client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &2, &500, &3, &10, &cycle_id, &true);
+    let result = client.renew(&sub_id, &2, &500, &token, &3, &10, &cycle_id, &true);
     assert!(result);
 }
 
 #[test]
 fn test_different_cycle_allowed_after_success() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 602;
@@ -503,19 +506,19 @@ fn test_different_cycle_allowed_after_success() {
     // First cycle succeeds
     client.approve_renewal(&sub_id, &1, &1000, &100);
     client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &3, &10, &20260315, &true);
+    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &20260315, &true);
     assert!(result);
 
     // Different cycle_id — should succeed
     client.approve_renewal(&sub_id, &2, &1000, &100);
     client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &2, &500, &3, &10, &20260415, &true);
+    let result = client.renew(&sub_id, &2, &500, &token, &3, &10, &20260415, &true);
     assert!(result);
 }
 
 #[test]
 fn test_first_renewal_always_allowed() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 603;
@@ -525,7 +528,7 @@ fn test_first_renewal_always_allowed() {
     // First renewal ever — no stored cycle, guard passes
     client.approve_renewal(&sub_id, &1, &1000, &100);
     client.acquire_renewal_lock(&sub_id, &200);
-    let result = client.renew(&sub_id, &1, &500, &3, &10, &20260101, &true);
+    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &20260101, &true);
     assert!(result);
 
     let data = client.get_sub(&sub_id);
@@ -534,7 +537,7 @@ fn test_first_renewal_always_allowed() {
 
 #[test]
 fn test_cancel_sub() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, _token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 600;
@@ -551,7 +554,7 @@ fn test_cancel_sub() {
 #[test]
 #[should_panic(expected = "Subscription already cancelled")]
 fn test_cannot_cancel_twice() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, _token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 601;
@@ -565,7 +568,7 @@ fn test_cannot_cancel_twice() {
 #[test]
 #[should_panic(expected = "Subscription not found")]
 fn test_cancel_non_existent_sub() {
-    let (_env, client, _admin) = setup();
+    let (_env, client, _admin, _token) = setup();
     client.cancel_sub(&999);
 }
 
@@ -573,7 +576,7 @@ fn test_cancel_non_existent_sub() {
 
 #[test]
 fn test_acquire_renewal_lock() {
-    let (_env, client, _admin) = setup();
+    let (_env, client, _admin, _token) = setup();
 
     let sub_id = 700;
 
@@ -589,7 +592,7 @@ fn test_acquire_renewal_lock() {
 #[test]
 #[should_panic(expected = "Renewal lock active")]
 fn test_lock_prevents_concurrent_acquisition() {
-    let (_env, client, _admin) = setup();
+    let (_env, client, _admin, _token) = setup();
 
     let sub_id = 701;
 
@@ -600,7 +603,7 @@ fn test_lock_prevents_concurrent_acquisition() {
 
 #[test]
 fn test_lock_auto_expires_and_reacquirable() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, _token) = setup();
 
     let sub_id = 702;
 
@@ -623,7 +626,7 @@ fn test_lock_auto_expires_and_reacquirable() {
 
 #[test]
 fn test_release_renewal_lock() {
-    let (_env, client, _admin) = setup();
+    let (_env, client, _admin, _token) = setup();
 
     let sub_id = 703;
 
@@ -637,7 +640,7 @@ fn test_release_renewal_lock() {
 #[test]
 #[should_panic(expected = "No renewal lock to release")]
 fn test_release_nonexistent_lock_panics() {
-    let (_env, client, _admin) = setup();
+    let (_env, client, _admin, _token) = setup();
 
     let sub_id = 704;
     client.release_renewal_lock(&sub_id);
@@ -646,7 +649,7 @@ fn test_release_nonexistent_lock_panics() {
 #[test]
 #[should_panic(expected = "Renewal lock required")]
 fn test_renew_without_lock_panics() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 705;
@@ -655,12 +658,12 @@ fn test_renew_without_lock_panics() {
     client.approve_renewal(&sub_id, &1, &1000, &100);
 
     // Renew without acquiring lock — should panic
-    client.renew(&sub_id, &1, &500, &3, &10, &20260101, &true);
+    client.renew(&sub_id, &1, &500, &token, &3, &10, &20260101, &true);
 }
 
 #[test]
 fn test_renew_with_lock_succeeds_and_auto_releases() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 706;
@@ -671,7 +674,7 @@ fn test_renew_with_lock_succeeds_and_auto_releases() {
     client.acquire_renewal_lock(&sub_id, &200);
     assert!(client.get_renewal_lock(&sub_id).is_some());
 
-    let result = client.renew(&sub_id, &1, &500, &3, &10, &20260101, &true);
+    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &20260101, &true);
     assert!(result);
 
     // Lock should be auto-released after renew
@@ -680,7 +683,7 @@ fn test_renew_with_lock_succeeds_and_auto_releases() {
 
 #[test]
 fn test_renew_failure_also_releases_lock() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 707;
@@ -691,7 +694,7 @@ fn test_renew_failure_also_releases_lock() {
     client.acquire_renewal_lock(&sub_id, &200);
     assert!(client.get_renewal_lock(&sub_id).is_some());
 
-    let result = client.renew(&sub_id, &1, &500, &3, &10, &20260101, &false);
+    let result = client.renew(&sub_id, &1, &500, &token, &3, &10, &20260101, &false);
     assert!(!result);
 
     // Lock should be auto-released even after failure
@@ -701,7 +704,7 @@ fn test_renew_failure_also_releases_lock() {
 #[test]
 #[should_panic(expected = "Renewal lock expired")]
 fn test_renew_with_expired_lock_panics() {
-    let (env, client, _admin) = setup();
+    let (env, client, _admin, token) = setup();
 
     let user = Address::generate(&env);
     let sub_id = 708;
@@ -717,13 +720,13 @@ fn test_renew_with_expired_lock_panics() {
     });
 
     // Renew with expired lock — should panic
-    client.renew(&sub_id, &1, &500, &3, &10, &20260101, &true);
+    client.renew(&sub_id, &1, &500, &token, &3, &10, &20260101, &true);
 }
 
 #[test]
 #[should_panic(expected = "Protocol is paused")]
 fn test_acquire_lock_blocked_when_paused() {
-    let (_env, client, _admin) = setup();
+    let (_env, client, _admin, _token) = setup();
 
     let sub_id = 709;
 
@@ -731,3 +734,62 @@ fn test_acquire_lock_blocked_when_paused() {
     // Should panic because protocol is paused
     client.acquire_renewal_lock(&sub_id, &200);
 }
+
+// ── Monetization feature tests ───────────────────────────────────
+
+#[test]
+fn test_set_and_get_fee_config() {
+    let (env, client, _admin, _token) = setup();
+    let recipient = Address::generate(&env);
+    
+    client.set_fee_config(&500, &recipient);
+    
+    let config = client.get_fee_config().unwrap();
+    assert_eq!(config.percentage, 500);
+    assert_eq!(config.recipient, recipient);
+}
+
+#[test]
+#[should_panic(expected = "Fee percentage exceeds 100%")]
+fn test_set_fee_config_invalid_percentage() {
+    let (env, client, _admin, _token) = setup();
+    let recipient = Address::generate(&env);
+    
+    client.set_fee_config(&10001, &recipient);
+}
+
+#[test]
+fn test_fee_transfer_on_renewal() {
+    let (env, client, _admin, token) = setup();
+    let user = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let sub_id = 1000;
+    let amount = 1000i128;
+    let fee_bps = 500u32; // 5%
+    let expected_fee = 50i128;
+
+    // Configure fee
+    client.set_fee_config(&fee_bps, &recipient);
+
+    // Setup subscription
+    client.init_sub(&user, &sub_id);
+    client.approve_renewal(&sub_id, &1, &amount, &100);
+
+    // Mint tokens to user and set allowance for contract
+    let token_admin = token::StellarAssetClient::new(&env, &token);
+    token_admin.mint(&user, &amount);
+    
+    // In Soroban tests with mock_all_auths, we don't strictly need to call approve
+    // but the contract uses transfer_from which requires allowance.
+    token::Client::new(&env, &token).approve(&user, &client.address, &amount, &200);
+
+    // Renew
+    client.acquire_renewal_lock(&sub_id, &100);
+    let result = client.renew(&sub_id, &1, &amount, &token, &3, &10, &20260101, &true);
+    assert!(result);
+
+    // Verify fee was transferred
+    let recipient_balance = token::Client::new(&env, &token).balance(&recipient);
+    assert_eq!(recipient_balance, expected_fee);
+}
+
