@@ -31,6 +31,13 @@ struct RenewalLockKey {
     lock_sub_id: u64,
 }
 
+/// Storage key for lifecycle timestamps per subscription
+#[contracttype]
+#[derive(Clone)]
+struct LifecycleKey {
+    lifecycle_sub_id: u64,
+}
+
 /// Data stored for an active renewal lock
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,6 +74,17 @@ pub struct SubscriptionData {
     pub state: SubscriptionState,
     pub failure_count: u32,
     pub last_attempt_ledger: u32,
+}
+
+/// Immutable audit timestamps for subscription lifecycle events.
+/// All timestamps are Unix epoch seconds from env.ledger().timestamp().
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LifecycleTimestamps {
+    pub created_at: u64,
+    pub activated_at: u64,
+    pub last_renewed_at: u64,
+    pub canceled_at: u64,
 }
 
 /// Events for subscription renewal tracking
@@ -133,6 +151,13 @@ pub struct RenewalLockExpired {
     pub sub_id: u64,
     pub original_locked_at: u32,
     pub expired_at: u32,
+}
+
+#[contractevent]
+pub struct LifecycleTimestampUpdated {
+    pub sub_id: u64,
+    pub event_kind: u32, // 1=created, 2=activated, 3=renewed, 4=canceled
+    pub timestamp: u64,
 }
 
 #[contract]
@@ -255,6 +280,32 @@ impl SubscriptionRenewalContract {
             last_attempt_ledger: 0,
         };
         env.storage().persistent().set(&key, &data);
+
+        // Initialize lifecycle timestamps
+        let now = env.ledger().timestamp();
+        let lifecycle = LifecycleTimestamps {
+            created_at: now,
+            activated_at: now,
+            last_renewed_at: 0,
+            canceled_at: 0,
+        };
+        let lc_key = LifecycleKey {
+            lifecycle_sub_id: sub_id,
+        };
+        env.storage().persistent().set(&lc_key, &lifecycle);
+
+        LifecycleTimestampUpdated {
+            sub_id,
+            event_kind: 1,
+            timestamp: now,
+        }
+        .publish(&env);
+        LifecycleTimestampUpdated {
+            sub_id,
+            event_kind: 2,
+            timestamp: now,
+        }
+        .publish(&env);
     }
 
     /// Explicitly cancel a subscription
@@ -274,6 +325,26 @@ impl SubscriptionRenewalContract {
 
         data.state = SubscriptionState::Cancelled;
         env.storage().persistent().set(&key, &data);
+
+        // Update lifecycle timestamps
+        let lc_key = LifecycleKey {
+            lifecycle_sub_id: sub_id,
+        };
+        let mut lifecycle: LifecycleTimestamps = env
+            .storage()
+            .persistent()
+            .get(&lc_key)
+            .expect("Lifecycle data not found");
+        let now = env.ledger().timestamp();
+        lifecycle.canceled_at = now;
+        env.storage().persistent().set(&lc_key, &lifecycle);
+
+        LifecycleTimestampUpdated {
+            sub_id,
+            event_kind: 4,
+            timestamp: now,
+        }
+        .publish(&env);
 
         // Emit state transition event
         StateTransition {
@@ -451,6 +522,9 @@ impl SubscriptionRenewalContract {
         }
 
         if succeed {
+            // Capture previous state before changing it
+            let previous_state = data.state;
+
             // Simulated success - renewal successful
             data.state = SubscriptionState::Active;
             data.failure_count = 0;
@@ -466,6 +540,37 @@ impl SubscriptionRenewalContract {
                 owner: data.owner.clone(),
             }
             .publish(&env);
+
+            // Update lifecycle timestamps
+            let lc_key = LifecycleKey {
+                lifecycle_sub_id: sub_id,
+            };
+            let mut lifecycle: LifecycleTimestamps = env
+                .storage()
+                .persistent()
+                .get(&lc_key)
+                .expect("Lifecycle data not found");
+            let now = env.ledger().timestamp();
+            lifecycle.last_renewed_at = now;
+
+            LifecycleTimestampUpdated {
+                sub_id,
+                event_kind: 3,
+                timestamp: now,
+            }
+            .publish(&env);
+
+            // If recovering from Retrying, also update activated_at
+            if previous_state == SubscriptionState::Retrying {
+                lifecycle.activated_at = now;
+                LifecycleTimestampUpdated {
+                    sub_id,
+                    event_kind: 2,
+                    timestamp: now,
+                }
+                .publish(&env);
+            }
+            env.storage().persistent().set(&lc_key, &lifecycle);
 
             // Auto-release lock
             env.storage().persistent().remove(&lock_key);
@@ -526,6 +631,16 @@ impl SubscriptionRenewalContract {
             .persistent()
             .get(&sub_id)
             .expect("Subscription not found")
+    }
+
+    pub fn get_lifecycle(env: Env, sub_id: u64) -> LifecycleTimestamps {
+        let lc_key = LifecycleKey {
+            lifecycle_sub_id: sub_id,
+        };
+        env.storage()
+            .persistent()
+            .get(&lc_key)
+            .expect("Lifecycle data not found")
     }
 }
 

@@ -731,3 +731,186 @@ fn test_acquire_lock_blocked_when_paused() {
     // Should panic because protocol is paused
     client.acquire_renewal_lock(&sub_id, &200);
 }
+
+// ── Lifecycle timestamp tests ─────────────────────────────────────
+
+#[test]
+fn test_lifecycle_created_on_init() {
+    let (env, client, _admin) = setup();
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1700000000;
+    });
+
+    let user = Address::generate(&env);
+    let sub_id = 800;
+
+    client.init_sub(&user, &sub_id);
+
+    let lc = client.get_lifecycle(&sub_id);
+    assert_eq!(lc.created_at, 1700000000);
+    assert_eq!(lc.activated_at, 1700000000);
+    assert_eq!(lc.last_renewed_at, 0);
+    assert_eq!(lc.canceled_at, 0);
+}
+
+#[test]
+fn test_lifecycle_renewed_at_updated_on_success() {
+    let (env, client, _admin) = setup();
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1700000000;
+    });
+
+    let user = Address::generate(&env);
+    let sub_id = 801;
+
+    client.init_sub(&user, &sub_id);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1700100000;
+    });
+
+    client.approve_renewal(&sub_id, &1, &1000, &100);
+    client.acquire_renewal_lock(&sub_id, &200);
+    client.renew(&sub_id, &1, &500, &3, &10, &20260101, &true);
+
+    let lc = client.get_lifecycle(&sub_id);
+    assert_eq!(lc.created_at, 1700000000);
+    assert_eq!(lc.activated_at, 1700000000); // unchanged — not recovering
+    assert_eq!(lc.last_renewed_at, 1700100000);
+    assert_eq!(lc.canceled_at, 0);
+}
+
+#[test]
+fn test_lifecycle_canceled_at_set_on_cancel() {
+    let (env, client, _admin) = setup();
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1700000000;
+    });
+
+    let user = Address::generate(&env);
+    let sub_id = 802;
+
+    client.init_sub(&user, &sub_id);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1700200000;
+    });
+
+    client.cancel_sub(&sub_id);
+
+    let lc = client.get_lifecycle(&sub_id);
+    assert_eq!(lc.created_at, 1700000000);
+    assert_eq!(lc.canceled_at, 1700200000);
+}
+
+#[test]
+fn test_lifecycle_activated_at_updated_on_recovery_from_retrying() {
+    let (env, client, _admin) = setup();
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1700000000;
+    });
+
+    let user = Address::generate(&env);
+    let sub_id = 803;
+
+    client.init_sub(&user, &sub_id);
+
+    // Fail once to enter Retrying
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1700100000;
+    });
+    client.approve_renewal(&sub_id, &1, &1000, &200);
+    client.acquire_renewal_lock(&sub_id, &200);
+    client.renew(&sub_id, &1, &500, &3, &10, &20260201, &false);
+
+    let data = client.get_sub(&sub_id);
+    assert_eq!(data.state, SubscriptionState::Retrying);
+
+    // Advance past cooldown, succeed
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 20;
+        li.timestamp = 1700200000;
+    });
+    client.approve_renewal(&sub_id, &2, &1000, &200);
+    client.acquire_renewal_lock(&sub_id, &200);
+    client.renew(&sub_id, &2, &500, &3, &10, &20260201, &true);
+
+    let lc = client.get_lifecycle(&sub_id);
+    assert_eq!(lc.created_at, 1700000000);
+    assert_eq!(lc.activated_at, 1700200000); // updated on recovery
+    assert_eq!(lc.last_renewed_at, 1700200000);
+    assert_eq!(lc.canceled_at, 0);
+}
+
+#[test]
+fn test_lifecycle_not_updated_on_renewal_failure() {
+    let (env, client, _admin) = setup();
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1700000000;
+    });
+
+    let user = Address::generate(&env);
+    let sub_id = 804;
+
+    client.init_sub(&user, &sub_id);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1700100000;
+    });
+    client.approve_renewal(&sub_id, &1, &1000, &200);
+    client.acquire_renewal_lock(&sub_id, &200);
+    client.renew(&sub_id, &1, &500, &3, &10, &20260301, &false);
+
+    let lc = client.get_lifecycle(&sub_id);
+    assert_eq!(lc.last_renewed_at, 0); // unchanged on failure
+    assert_eq!(lc.activated_at, 1700000000); // unchanged
+}
+
+#[test]
+fn test_lifecycle_multiple_renewals_update_last_renewed() {
+    let (env, client, _admin) = setup();
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1700000000;
+    });
+
+    let user = Address::generate(&env);
+    let sub_id = 805;
+
+    client.init_sub(&user, &sub_id);
+
+    // First renewal
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1700100000;
+    });
+    client.approve_renewal(&sub_id, &1, &1000, &100);
+    client.acquire_renewal_lock(&sub_id, &200);
+    client.renew(&sub_id, &1, &500, &3, &10, &20260401, &true);
+
+    let lc = client.get_lifecycle(&sub_id);
+    assert_eq!(lc.last_renewed_at, 1700100000);
+
+    // Second renewal
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1700200000;
+    });
+    client.approve_renewal(&sub_id, &2, &1000, &100);
+    client.acquire_renewal_lock(&sub_id, &200);
+    client.renew(&sub_id, &2, &500, &3, &10, &20260501, &true);
+
+    let lc = client.get_lifecycle(&sub_id);
+    assert_eq!(lc.last_renewed_at, 1700200000);
+    assert_eq!(lc.created_at, 1700000000); // unchanged
+}
+
+#[test]
+#[should_panic(expected = "Lifecycle data not found")]
+fn test_get_lifecycle_nonexistent_sub() {
+    let (_env, client, _admin) = setup();
+    client.get_lifecycle(&999);
+}
