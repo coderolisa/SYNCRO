@@ -1,49 +1,95 @@
 # Syncro Backend SDK
 
-## Batch Operations
+Subscription CRUD wrapper for the Syncro backend. Developers should use these SDK methods instead of calling raw API endpoints or Soroban contracts directly.
 
-Batch methods reduce gas and improve UX by operating on multiple items in one call. All batch methods:
+## Features
 
-- Return an array of individual results (success/failure per item)
-- Handle partial failure gracefully—failed items don't block successful ones
+- **createSubscription()** – Create subscriptions with validation and backend + on-chain sync
+- **updateSubscription()** – Update subscriptions with validation
+- **getSubscription()** – Fetch a single subscription by ID
+- **cancelSubscription()** – Soft cancel (set status to `cancelled`)
+- **deleteSubscription()** – Permanently delete a subscription
+- **attachGiftCard()** – Attach gift card info (manual and gift-card subscriptions)
 
-### Batch Cancel
+Validation, lifecycle events, and sync (backend + on-chain) are handled automatically.
 
-```ts
-const { results, successCount, failureCount } = await sdk.batchCancelSubscriptions([
-  'sub-1',
-  'sub-2',
-  'sub-3',
-]);
+## Installation
 
-results.forEach((r) => {
-  if (r.success) console.log(`Cancelled ${r.id}`, r.data);
-  else console.error(`Failed ${r.id}:`, r.error);
+```bash
+npm install @syncro/sdk
+```
+
+## Usage
+
+```typescript
+import { createSyncroSDK } from "@syncro/sdk";
+
+const sdk = createSyncroSDK({
+    baseUrl: "https://api.syncro.example.com",
+    getAuth: async () => localStorage.getItem("token") ?? null,
+    credentials: "include", // or omit for Bearer-only
 });
-```
 
-### Batch Fetch Subscriptions
-
-```ts
-const { results, successCount, failureCount } = await sdk.batchGetSubscriptions([
-  'sub-1',
-  'sub-2',
-]);
-
-results.forEach((r) => {
-  if (r.success) console.log(r.id, r.data);
-  else console.error(`${r.id}:`, r.error);
+// Lifecycle events
+sdk.on("subscription", (event) => {
+    console.log(event.type, event.subscriptionId, event.data);
 });
+sdk.on("giftCard", (event) => {
+    console.log(event.type, event.subscriptionId);
+});
+
+// Create
+const result = await sdk.createSubscription({
+    name: "Netflix",
+    price: 15.99,
+    billing_cycle: "monthly",
+    source: "manual", // or 'gift_card'
+});
+
+// Get
+const sub = await sdk.getSubscription(subscriptionId);
+
+// Update
+await sdk.updateSubscription(subscriptionId, { price: 19.99 });
+
+// Cancel (soft)
+await sdk.cancelSubscription(subscriptionId);
+
+// Delete (hard)
+await sdk.deleteSubscription(subscriptionId);
+
+// Attach gift card
+await sdk.attachGiftCard(subscriptionId, giftCardHash, provider);
 ```
 
-### Batch Approval
+## API Reference
 
-```ts
-const { results } = await sdk.batchApproveRenewals([
-  { subscriptionId: 'sub-1', maxSpend: '100', expiresAt: 12345 },
-  { subscriptionId: 'sub-2', maxSpend: '200', expiresAt: 12346 },
-]);
-// Supports snake_case: subscription_id, max_spend, expires_at
-```
+### Options
 
-**Note:** Batch approval requires the backend to implement `POST /api/subscriptions/:id/approve-renewal`. Until then, each call will return failure per item; partial failure handling still applies.
+- `baseUrl` – Backend API base URL
+- `getAuth?` – Optional async function returning Bearer token
+- `credentials?` – `'include'` | `'omit'` | `'same-origin'` (default: `'include'`)
+
+### Methods
+
+| Method                                           | Description                                                    |
+| ------------------------------------------------ | -------------------------------------------------------------- |
+| `createSubscription(input, options?)`            | Create subscription. Emits `subscription` with type `created`. |
+| `getSubscription(id)`                            | Get subscription by ID                                         |
+| `updateSubscription(id, input, options?)`        | Update subscription. Emits `subscription` with type `updated`. |
+| `cancelSubscription(id)`                         | Soft cancel. Emits `subscription` with type `cancelled`.       |
+| `deleteSubscription(id)`                         | Hard delete. Emits `subscription` with type `deleted`.         |
+| `attachGiftCard(subscriptionId, hash, provider)` | Attach gift card. Emits `giftCard` events.                     |
+
+### Events
+
+- **subscription** – `{ type, subscriptionId, data?, error?, blockchain? }`  
+  Types: `created`, `updated`, `cancelled`, `deleted`, `failed`
+- **giftCard** – `{ type, subscriptionId, giftCardHash?, provider?, data?, error? }`  
+  Types: `attached`, `failed`
+
+### Validation
+
+- `validateSubscriptionCreateInput(input)` – Returns `{ isValid, errors }`
+- `validateSubscriptionUpdateInput(input)` – Returns `{ isValid, errors }`
+- `validateGiftCardHash(hash)` – Returns boolean
