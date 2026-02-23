@@ -10,6 +10,7 @@ import { reminderEngine } from './services/reminder-engine';
 import subscriptionRoutes from './routes/subscriptions';
 import merchantRoutes from './routes/merchants';
 import { monitoringService } from './services/monitoring-service';
+import { healthService } from './services/health-service';
 import { eventListener } from './services/event-listener';
 import { expiryService } from './services/expiry-service';
 
@@ -81,6 +82,19 @@ app.get('/api/admin/metrics/activity', adminAuth, async (req, res) => {
   }
 });
 
+// Protocol Health Monitor: unified admin health (metrics, alerts, history)
+app.get('/api/admin/health', adminAuth, async (req, res) => {
+  try {
+    const includeHistory = req.query.history !== 'false';
+    const health = await healthService.getAdminHealth(includeHistory);
+    const statusCode = health.status === 'unhealthy' ? 503 : 200;
+    res.status(statusCode).json(health);
+  } catch (error) {
+    logger.error('Error fetching admin health:', error);
+    res.status(500).json({ error: 'Failed to fetch health status' });
+  }
+});
+
 // Manual trigger endpoints (for testing/admin - Should eventually be protected)
 app.post('/api/reminders/process', adminAuth, async (req, res) => {
   try {
@@ -122,6 +136,16 @@ app.post('/api/reminders/retry', adminAuth, async (req, res) => {
   }
 });
 
+// Protocol Health Monitor: record metrics snapshot periodically (historical storage)
+const HEALTH_SNAPSHOT_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+function startHealthSnapshotInterval() {
+  setInterval(() => {
+    healthService.recordSnapshot().catch(() => {});
+  }, HEALTH_SNAPSHOT_INTERVAL_MS);
+  // Record one snapshot shortly after startup
+  setTimeout(() => healthService.recordSnapshot().catch(() => {}), 5000);
+}
+
 app.post('/api/admin/expiry/process', adminAuth, async (req, res) => {
   try {
     const result = await expiryService.processExpiries();
@@ -135,6 +159,7 @@ app.post('/api/admin/expiry/process', adminAuth, async (req, res) => {
   }
 });
 
+
 // Start server
 const server = app.listen(PORT, () => {
   logger.info(`Server running on port ${PORT}`);
@@ -142,6 +167,9 @@ const server = app.listen(PORT, () => {
 
   // Start scheduler
   schedulerService.start();
+
+  // Start health metrics snapshot loop
+  startHealthSnapshotInterval();
 
   // Start event listener
   eventListener.start().catch(err => {
