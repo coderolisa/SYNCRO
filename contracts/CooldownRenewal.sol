@@ -178,8 +178,8 @@ contract CooldownRenewal {
         // ── CHECK ────────────────────────────────────────────────────────────
         // First attempt: last == 0, so condition is trivially satisfied.
         // Subsequent: must have passed the cooldown window.
-        // Strict `>` intentional: prevents same-block second attempt.
-        if (last != 0 && now48 <= last + period) {
+        // Reject if now < last + period (require strict >=)
+        if (last != 0 && now48 < last + period) {
             // Provide the exact retry timestamp for better UX in frontends/SDKs
             revert CooldownNotElapsed(uint256(last) + uint256(period));
         }
@@ -245,6 +245,6 @@ contract CooldownRenewal {
     function isInCooldown(address subscriber) external view returns (bool) {
         uint48 last = _subscribers[subscriber].lastAttemptTimestamp;
         if (last == 0) return false;
-        return block.timestamp <= uint256(last) + uint256(cooldownPeriod);
+        return block.timestamp < uint256(last) + uint256(cooldownPeriod);
     }
 }

@@ -1,4 +1,5 @@
 require("@nomicfoundation/hardhat-toolbox");
+require("@nomicfoundation/hardhat-network-helpers");
 
 module.exports = {
   solidity: {
@@ -16,9 +17,12 @@ module.exports = {
     },
   },
   paths: {
-    sources: "./",
-    tests: "./",
+    sources: "./contracts",
+    tests: "./test",
     cache: "./.hardhat/cache",
     artifacts: "./.hardhat/artifacts",
+  },
+  gasReporter: {
+    enabled: false,
   },
 };
