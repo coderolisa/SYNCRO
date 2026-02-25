@@ -2,6 +2,7 @@ import logger from '../config/logger';
 import { supabase } from '../config/database';
 import { reorgHandler } from './reorg-handler';
 import { generateCycleId } from '../utils/cycle-id';
+import { renewalCooldownService } from './renewal-cooldown-service';
 
 export const LIFECYCLE_COLUMN_MAP: Record<number, string> = {
   1: 'blockchain_created_at',
@@ -147,7 +148,7 @@ export class EventListener {
     // Fetch the subscription to get next_billing_date for cycle_id
     const { data: sub } = await supabase
       .from('subscriptions')
-      .select('next_billing_date')
+      .select('id, next_billing_date')
       .eq('blockchain_sub_id', sub_id)
       .single();
 
@@ -155,6 +156,7 @@ export class EventListener {
       status: 'active',
       last_payment_date: new Date().toISOString(),
       failure_count: 0,
+      last_renewal_attempt_at: new Date().toISOString(), // Record successful renewal attempt
     };
 
     if (sub?.next_billing_date) {
@@ -165,6 +167,21 @@ export class EventListener {
       .from('subscriptions')
       .update(updateData)
       .eq('blockchain_sub_id', sub_id);
+
+    // Record the renewal attempt in the tracking table
+    if (sub?.id) {
+      try {
+        await renewalCooldownService.recordRenewalAttempt(
+          sub.id,
+          true,
+          undefined,
+          'automatic'
+        );
+      } catch (recordError) {
+        logger.warn('Failed to record renewal attempt success:', recordError);
+        // Don't throw - the main operation succeeded
+      }
+    }
 
     return {
       sub_id,
@@ -178,13 +195,38 @@ export class EventListener {
   private async handleRenewalFailed(event: ContractEvent): Promise<ProcessedEvent | null> {
     const { sub_id, failure_count } = event.value;
 
+    // Fetch subscription ID for cooldown tracking
+    const { data: sub } = await supabase
+      .from('subscriptions')
+      .select('id')
+      .eq('blockchain_sub_id', sub_id)
+      .single();
+
+    const updateData: Record<string, any> = {
+      status: 'retrying',
+      failure_count,
+      last_renewal_attempt_at: new Date().toISOString(), // Record failed renewal attempt
+    };
+
     await supabase
       .from('subscriptions')
-      .update({
-        status: 'retrying',
-        failure_count,
-      })
+      .update(updateData)
       .eq('blockchain_sub_id', sub_id);
+
+    // Record the renewal attempt in the tracking table
+    if (sub?.id) {
+      try {
+        await renewalCooldownService.recordRenewalAttempt(
+          sub.id,
+          false,
+          `Renewal failed on blockchain (failure count: ${failure_count})`,
+          'automatic'
+        );
+      } catch (recordError) {
+        logger.warn('Failed to record renewal attempt failure:', recordError);
+        // Don't throw - the main operation succeeded
+      }
+    }
 
     return {
       sub_id,

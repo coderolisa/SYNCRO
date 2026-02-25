@@ -1,5 +1,6 @@
 import { supabase } from "../config/database";
 import { blockchainService } from "./blockchain-service";
+import { renewalCooldownService } from "./renewal-cooldown-service";
 import logger from "../config/logger";
 import { DatabaseTransaction } from "../utils/transaction";
 import type {
@@ -331,20 +332,114 @@ export class SubscriptionService {
     };
   }
 
-  // Retry blockchain sync for a subscription
+  /**
+   * Check if a renewal can be attempted based on cooldown period
+   * Returns cooldown status without enforcing it
+   */
+  async checkRenewalCooldown(
+    subscriptionId: string,
+  ): Promise<{
+    canRetry: boolean;
+    isOnCooldown: boolean;
+    timeRemainingSeconds: number;
+    message: string;
+  }> {
+    try {
+      const cooldownStatus = await renewalCooldownService.checkCooldown(
+        subscriptionId,
+      );
 
+      return {
+        canRetry: cooldownStatus.canRetry,
+        isOnCooldown: cooldownStatus.isOnCooldown,
+        timeRemainingSeconds: cooldownStatus.timeRemainingSeconds,
+        message: cooldownStatus.canRetry
+          ? "Renewal can be attempted"
+          : `Cooldown period active. Please wait ${cooldownStatus.timeRemainingSeconds} seconds before retrying.`,
+      };
+    } catch (error) {
+      logger.error("Error checking renewal cooldown:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Retry blockchain sync for a subscription with cooldown enforcement
+   * Enforces minimum time gap between renewal attempts to prevent network spam
+   */
   async retryBlockchainSync(
     userId: string,
     subscriptionId: string,
+    forceBypass: boolean = false,
   ): Promise<{ success: boolean; transactionHash?: string; error?: string }> {
-    const subscription = await this.getSubscription(userId, subscriptionId);
+    try {
+      // Check cooldown unless forcing bypass (admin operations)
+      if (!forceBypass) {
+        const cooldownStatus = await renewalCooldownService.checkCooldown(
+          subscriptionId,
+        );
 
-    return await blockchainService.syncSubscription(
-      userId,
-      subscriptionId,
-      "update",
-      subscription,
-    );
+        if (cooldownStatus.isOnCooldown) {
+          const error = `Cooldown period active. Please wait ${cooldownStatus.timeRemainingSeconds} seconds before retrying.`;
+          logger.warn("Renewal attempt rejected due to cooldown", {
+            subscription_id: subscriptionId,
+            time_remaining_seconds: cooldownStatus.timeRemainingSeconds,
+          });
+          throw new Error(error);
+        }
+      }
+
+      const subscription = await this.getSubscription(userId, subscriptionId);
+
+      // Record the attempt before making the call
+      await renewalCooldownService.recordRenewalAttempt(
+        subscriptionId,
+        false, // Assume failure initially
+        "Attempt in progress",
+        "retry",
+      );
+
+      const result = await blockchainService.syncSubscription(
+        userId,
+        subscriptionId,
+        "update",
+        subscription,
+      );
+
+      // Update the attempt status based on result
+      if (result.success) {
+        await renewalCooldownService.recordRenewalAttempt(
+          subscriptionId,
+          true,
+          undefined,
+          "retry",
+        );
+      } else {
+        await renewalCooldownService.recordRenewalAttempt(
+          subscriptionId,
+          false,
+          result.error || "Blockchain sync failed",
+          "retry",
+        );
+      }
+
+      return result;
+    } catch (error) {
+      // Record the failed attempt
+      try {
+        await renewalCooldownService.recordRenewalAttempt(
+          subscriptionId,
+          false,
+          error instanceof Error ? error.message : String(error),
+          "retry",
+        );
+      } catch (logError) {
+        logger.warn("Failed to log renewal attempt:", logError);
+      }
+
+      logger.error("Renewal retry failed:", error);
+      throw error;
+    }
   }
 }
 

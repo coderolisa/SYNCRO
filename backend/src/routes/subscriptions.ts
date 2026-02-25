@@ -332,6 +332,7 @@ router.post('/:id/attach-gift-card', validateSubscriptionOwnership, async (req: 
 /**
  * POST /api/subscriptions/:id/retry-sync
  * Retry blockchain sync for a subscription
+ * Enforces cooldown period to prevent rapid repeated attempts
  */
 router.post("/:id/retry-sync", validateSubscriptionOwnership, async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -346,13 +347,57 @@ router.post("/:id/retry-sync", validateSubscriptionOwnership, async (req: Authen
       error: result.error,
     });
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Failed to retry sync";
+    
+    // Check if it's a cooldown error
+    if (errorMessage.includes("Cooldown period active")) {
+      logger.warn("Retry sync rejected due to cooldown:", errorMessage);
+      return res.status(429).json({
+        success: false,
+        error: errorMessage,
+        retryAfter: extractWaitTime(errorMessage),
+      });
+    }
+    
     logger.error("Retry sync error:", error);
     res.status(500).json({
       success: false,
-      error: error instanceof Error ? error.message : "Failed to retry sync",
+      error: errorMessage,
     });
   }
 });
+
+/**
+ * GET /api/subscriptions/:id/cooldown-status
+ * Check if a subscription can be retried or if cooldown is active
+ */
+router.get("/:id/cooldown-status", validateSubscriptionOwnership, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const cooldownStatus = await subscriptionService.checkRenewalCooldown(
+      req.params.id,
+    );
+
+    res.json({
+      success: true,
+      canRetry: cooldownStatus.canRetry,
+      isOnCooldown: cooldownStatus.isOnCooldown,
+      timeRemainingSeconds: cooldownStatus.timeRemainingSeconds,
+      message: cooldownStatus.message,
+    });
+  } catch (error) {
+    logger.error("Cooldown status check error:", error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to check cooldown status",
+    });
+  }
+});
+
+// Helper function to extract wait time from error message
+function extractWaitTime(message: string): number {
+  const match = message.match(/wait (\d+) seconds/);
+  return match ? parseInt(match[1], 10) : 60;
+}
 
 /**
  * POST /api/subscriptions/:id/cancel
