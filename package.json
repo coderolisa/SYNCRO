@@ -1,0 +1,31 @@
+{
+  "name": "drips-audit-logging",
+  "version": "1.0.0",
+  "description": "Production-ready audit logging system with database persistence",
+  "main": "index.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint . --ext .ts,.tsx",
+    "db:setup": "psql -f ./db/schema.sql",
+    "db:migrate": "psql -f ./db/migrations.sql"
+  },
+  "dependencies": {
+    "next": "^14.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "pg": "^8.11.0",
+    "@supabase/supabase-js": "^2.38.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "@types/pg": "^8.10.0",
+    "typescript": "^5.0.0",
+    "eslint": "^8.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0"
+  }
+}
