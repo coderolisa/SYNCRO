@@ -149,6 +149,7 @@ function AppContent({
         subscriptions,
         loading,
         bulkActionLoading,
+        initialLoading,
         selectedSubscriptions,
         selectedSubscription,
         canUndo,
@@ -673,6 +674,7 @@ function AppContent({
                                 unusedSubscriptions={unusedSubscriptions}
                                 onPause={(sub) => handlePauseSubscription(sub.id)}
                                 onResume={(sub) => handleResumeSubscription(sub.id)}
+                                loading={initialLoading}
                             />
                         )}
                         {activeView === "analytics" && (

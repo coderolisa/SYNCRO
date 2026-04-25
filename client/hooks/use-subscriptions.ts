@@ -42,6 +42,8 @@ export function useSubscriptions({
     canRedo,
   } = useUndoManager(initialSubscriptions);
 
+  const [initialLoading, setInitialLoading] = useState(true);
+
   // On mount, attempt to fetch live subscriptions from backend API and replace initial state
   useEffect(() => {
     let mounted = true;
@@ -84,6 +86,8 @@ export function useSubscriptions({
       } catch (error) {
         // ignore - keep initial subscriptions
         // console.debug("Failed to fetch subscriptions from API:", error)
+      } finally {
+        if (mounted) setInitialLoading(false);
       }
     };
 
@@ -521,6 +525,7 @@ const handleResumeSubscription = useCallback(
     subscriptions,
     loading,
     bulkActionLoading,
+    initialLoading,
     selectedSubscriptions,
     selectedSubscription,
     canUndo,

@@ -15,6 +15,7 @@ import { fetchAllCancellationGuides, type CancellationGuide } from "@/lib/supaba
 import { StatusBadge, normalizeStatus } from "@/components/ui/status-badge"
 import { AdvancedFilterBar, type FilterState, EMPTY_FILTERS, hasActiveFilters } from "@/components/ui/advanced-filter-bar"
 import { KeyboardHelpModal } from "@/components/modals/keyboard-help-modal"
+import { Skeleton } from "@/components/ui/skeleton"
 
 interface SubscriptionsPageProps {
   subscriptions?: any[]
@@ -34,6 +35,7 @@ interface SubscriptionsPageProps {
   onResume?: (subscription: any) => void
   onCancelTrial?: (id: number) => void
   onConvertTrial?: (id: number) => void
+  loading?: boolean
 }
 
 export default function SubscriptionsPage({
@@ -54,6 +56,7 @@ export default function SubscriptionsPage({
   onResume,
   onCancelTrial,
   onConvertTrial,
+  loading = false,
 }: SubscriptionsPageProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const debouncedSearchTerm = useDebounce(searchTerm, 300)
@@ -200,18 +203,28 @@ export default function SubscriptionsPage({
     .sort((a: any, b: any) => new Date(a.trialEndsAt).getTime() - new Date(b.trialEndsAt).getTime())
 
   if (hasNoSubscriptions) {
-    return (
-      <EmptyState
-        icon="📦"
-        title="No subscriptions yet"
-        description="Start tracking your subscriptions by connecting your email or adding them manually."
-        action={{
-          label: "Add your first subscription",
-          onClick: () => {},
-        }}
-        darkMode={darkMode}
-      />
-    )
+    if (loading) {
+      return (
+        <div className="space-y-3">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <SubscriptionCardSkeleton key={i} darkMode={darkMode} />
+          ))}
+        </div>
+      )
+    } else {
+      return (
+        <EmptyState
+          icon="📦"
+          title="No subscriptions yet"
+          description="Start tracking your subscriptions by connecting your email or adding them manually."
+          action={{
+            label: "Add your first subscription",
+            onClick: () => {},
+          }}
+          darkMode={darkMode}
+        />
+      )
+    }
   }
 
   const shouldVirtualize = filtered.length > 100
@@ -953,6 +966,49 @@ function BrokenCardPlaceholder({ name, darkMode }: { name?: string; darkMode?: b
       </div>
       <div className="text-right">
         <p className={`text-xs ${darkMode ? "text-gray-400" : "text-gray-500"}`}>Unavailable</p>
+      </div>
+    </div>
+  )
+}
+
+export function SubscriptionCardSkeleton({ darkMode }: { darkMode?: boolean }) {
+  return (
+    <div
+      className={`${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"} border rounded-xl p-5 flex items-center justify-between`}
+    >
+      <div className="flex items-center gap-4 flex-1">
+        <Skeleton className="w-4 h-4 rounded" />
+        <Skeleton className="w-12 h-12 rounded-lg" />
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-5 w-32" />
+            <Skeleton className="h-4 w-16 rounded-full" />
+          </div>
+          <div className="flex items-center gap-2 mt-1">
+            <Skeleton className="h-3 w-20" />
+          </div>
+          <div className="flex items-center gap-2 mt-1">
+            <Skeleton className="h-3 w-24 rounded-full" />
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-8">
+        <div className="flex items-center gap-4">
+          <Skeleton className="h-6 w-12 rounded-md" />
+          <div className="text-right min-w-32">
+            <Skeleton className="h-3 w-24 ml-auto" />
+            <Skeleton className="h-4 w-16 rounded-full mt-1 ml-auto" />
+          </div>
+        </div>
+        <div className="text-right">
+          <Skeleton className="h-5 w-12 ml-auto" />
+          <Skeleton className="h-3 w-8 ml-auto mt-1" />
+        </div>
+        <div className="flex gap-2">
+          <Skeleton className="w-8 h-8 rounded-lg" />
+          <Skeleton className="w-8 h-8 rounded-lg" />
+          <Skeleton className="w-8 h-8 rounded-lg" />
+        </div>
       </div>
     </div>
   )
