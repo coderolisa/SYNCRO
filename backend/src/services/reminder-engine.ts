@@ -15,7 +15,6 @@ import { userPreferenceService } from './user-preference-service';
 import { notificationPreferenceService } from './notification-preference-service';
 import { quietHoursService } from './quiet-hours-service';
 import { delayedNotificationService } from './delayed-notification-service';
-import { analyticsService } from './analytics-service';
 
 export interface ReminderEngineOptions {
   defaultDaysBefore?: number[];
@@ -57,6 +56,7 @@ export class ReminderEngine {
 
       if (!reminders || reminders.length === 0) {
         logger.info(`No pending reminders found for ${dateString}`);
+        await this.checkInsufficientBalance();
         return;
       }
 
@@ -69,6 +69,8 @@ export class ReminderEngine {
           logger.error(`Failed to process reminder ${reminder.id}:`, error);
         }
       }
+
+      await this.checkInsufficientBalance();
     } catch (error) {
       logger.error('Error processing reminders:', error);
       throw error;
@@ -158,12 +160,10 @@ export class ReminderEngine {
    * Check insufficient balance for a specific user
    */
   private async checkUserInsufficientBalance(userId: string, budgetLimit: number): Promise<void> {
-    // Get analytics summary to get current spend
-    const summary = await analyticsService.getSummary(userId);
-    const remainingBalance = budgetLimit - summary.budget_status.current_spend;
+    // Treat the overall budget limit as the current prepaid wallet balance for this alert.
+    const walletBalance = budgetLimit;
 
-    if (remainingBalance <= 0) {
-      // Already over budget, perhaps already alerted
+    if (walletBalance <= 0) {
       return;
     }
 
@@ -192,11 +192,11 @@ export class ReminderEngine {
     const preferences = await userPreferenceService.getPreferences(userId);
 
     for (const sub of subscriptions) {
-      if (sub.price > remainingBalance) {
+      if (sub.price > walletBalance) {
         // Send critical alert
         const payload: NotificationPayload = {
           title: 'Insufficient Wallet Balance',
-          body: `Wallet balance ($${remainingBalance.toFixed(2)}) is insufficient for ${sub.name} ($${sub.price.toFixed(2)}).`,
+          body: `Wallet balance ($${walletBalance.toFixed(2)}) is insufficient for ${sub.name} ($${sub.price.toFixed(2)}).`,
           subscription: sub as Subscription,
           reminderType: 'renewal',
           daysBefore: 0,
