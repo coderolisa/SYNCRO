@@ -19,7 +19,9 @@
     "generate-pwa-assets": "npm run generate-pwa-icons && npm run generate-pwa-screenshot",
     "e2e": "npx playwright test",
     "e2e:headed": "npx playwright test --headed",
-    "e2e:report": "npx playwright show-report"
+    "e2e:report": "npx playwright show-report",
+    "lint:deps": "node -e \"const p=require('./package.json');const bad=Object.entries({...p.dependencies,...p.devDependencies}).filter(([,v])=>v==='latest'||v==='*'||/^\\^?\\d+$/.test(v)).map(([n,v])=>n+'@'+v);if(bad.length){console.error('Loose dep ranges:',bad);process.exit(1);}else{console.log('All dep ranges OK');}\"",
+    "preinstall": "npm run lint:deps"
   },
   "dependencies": {
     "@tremor/react": "^3.17.4",
