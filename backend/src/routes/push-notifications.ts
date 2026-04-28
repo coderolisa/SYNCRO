@@ -4,6 +4,7 @@ import { authenticate, AuthenticatedRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import logger from '../config/logger';
 import { pushSubscribeSchema } from '../schemas/push-notification';
+import { enqueueNotification } from '../jobs/notification-queue';
 
 const router: Router = Router();
 
