@@ -4,6 +4,7 @@
   "description": "backend for synchro",
   "license": "ISC",
   "author": "",
+  "packageManager": "npm@10.9.2",
   "type": "commonjs",
   "main": "dist/index.js",
   "scripts": {

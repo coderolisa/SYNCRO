@@ -86,16 +86,12 @@ client/
 
 ### Prerequisites
 - Node.js 20+
-- npm, yarn, or npm
+- npm (bundled with Node.js)
 
 ### Installation
 
 ```bash
 cd client
-npm install
-# or
-yarn install
-# or
 npm install
 ```
 

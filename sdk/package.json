@@ -2,6 +2,7 @@
   "name": "@syncro/sdk",
   "version": "1.1.0",
   "description": "Official SDK for the SYNCRO Subscription Management Platform",
+  "packageManager": "npm@10.9.2",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

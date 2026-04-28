@@ -102,7 +102,7 @@ Thank you for your interest in contributing! This guide will help you set up the
 ---
 ## Development Setup
 - Node.js >= 20
-- npm or yarn
+- npm (bundled with Node.js — do not use yarn or pnpm)
 - Supabase CLI (for database)
 - (Optional) Stellar CLI for contract interactions
 ---
