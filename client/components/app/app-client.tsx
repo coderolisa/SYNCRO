@@ -149,7 +149,7 @@ function AppContent({
     const auth = useAuth();
     const { toasts, showToast, removeToast } = useToast();
     const { confirmDialog, showDialog, hideDialog } = useConfirmationDialog();
-    const { shouldShowTour, completeTour, skipTour } = useOnboardingTourEnhanced();
+    const { shouldShowTour, completeTour, skipTour, resetTour } = useOnboardingTourEnhanced();
     const {
         addDeletedSubscription,
         restoreSubscription,
@@ -660,6 +660,7 @@ function AppContent({
                                     displayCurrency={currency}
                                     exchangeRates={exchangeRates}
                                     ratesStale={ratesStale}
+                                    onRestartTour={resetTour}
                                 />
                             )
                         )}
@@ -759,6 +760,7 @@ function AppContent({
                                         });
                                     }
                                 }}
+                                onRestartTour={resetTour}
                             />
                         )}
                     </>

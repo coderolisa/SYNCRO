@@ -24,6 +24,9 @@ export * from './env'
 // Idempotency
 export * from './idempotency'
 
+// CSRF
+export * from './csrf'
+
 /**
  * Helper to create a complete API route handler with all middleware
  */
@@ -34,6 +37,7 @@ import { type RequestContext, type ApiResponse } from './types'
 import { isMaintenanceMode } from './env'
 import { ApiErrors } from './errors'
 import { idempotencyService } from './idempotency'
+import { validateCsrfToken } from './csrf'
 
 type RouteHandler = (
   request: NextRequest,
@@ -47,6 +51,7 @@ type RouteOptions = {
   rateLimit?: (request: NextRequest) => void
   skipMaintenanceCheck?: boolean
   idempotent?: boolean
+  skipCsrf?: boolean
 }
 
 export function createApiRoute(
@@ -56,6 +61,12 @@ export function createApiRoute(
   return withErrorHandling(async (request: NextRequest) => {
     if (!options.skipMaintenanceCheck && isMaintenanceMode()) {
       throw ApiErrors.serviceUnavailable('Service is currently under maintenance')
+    }
+
+    // CSRF protection for all mutating requests (POST, PUT, PATCH, DELETE)
+    const isMutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)
+    if (isMutating && !options.skipCsrf) {
+      validateCsrfToken(request)
     }
 
     if (options.rateLimit) {
@@ -141,5 +152,4 @@ export function createApiRoute(
     return response
   }, crypto.randomUUID())
 }
-
 

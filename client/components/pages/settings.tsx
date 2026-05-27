@@ -34,6 +34,7 @@ interface SettingsPageProps {
   onUpgradeToTeam?: (workspaceData: any) => void
   payments?: any[]
   onRefund?: (transactionId: string) => void
+  onRestartTour?: () => void
 }
 
 export default function SettingsPage({
@@ -50,6 +51,7 @@ export default function SettingsPage({
   onUpgradeToTeam,
   payments = [],
   onRefund,
+  onRestartTour,
 }: SettingsPageProps) {
   const [alertThreshold, setAlertThreshold] = useState(80)
   const [emailAlerts, setEmailAlerts] = useState(true)
@@ -635,9 +637,14 @@ export default function SettingsPage({
             </div>
             <button
               onClick={() => {
-                localStorage.removeItem("onboarding-tour-completed");
-                localStorage.removeItem("onboarding-tour-skipped");
-                window.location.reload();
+                if (onRestartTour) {
+                  onRestartTour();
+                } else {
+                  localStorage.removeItem("onboarding-tour-completed");
+                  localStorage.removeItem("onboarding-tour-skipped");
+                  localStorage.removeItem("onboarding-tour-step-index");
+                  window.location.reload();
+                }
               }}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                 darkMode
