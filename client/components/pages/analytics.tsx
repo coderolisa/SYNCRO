@@ -54,24 +54,24 @@ export default function AnalyticsPage({ summary, darkMode, savedBySyncroCount = 
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       {/* Stats Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className={`p-6 rounded-xl border ${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"}`}>
-          <p className="text-sm text-gray-400 mb-1">Total Monthly Spend</p>
-          <p className={`text-3xl font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6">
+        <div className={`p-4 sm:p-6 rounded-xl border ${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"}`}>
+          <p className="text-xs sm:text-sm text-gray-400 mb-1">Total Monthly Spend</p>
+          <p className={`text-2xl sm:text-3xl font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>
             {formatCurrency(summary.total_monthly_spend, currency)}
           </p>
         </div>
-        <div className={`p-6 rounded-xl border ${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"}`}>
-          <p className="text-sm text-gray-400 mb-1">Active Subscriptions</p>
-          <p className={`text-3xl font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>
+        <div className={`p-4 sm:p-6 rounded-xl border ${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"}`}>
+          <p className="text-xs sm:text-sm text-gray-400 mb-1">Active Subscriptions</p>
+          <p className={`text-2xl sm:text-3xl font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>
             {summary.active_subscriptions}
           </p>
         </div>
-        <div className={`p-6 rounded-xl border ${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"}`}>
-          <p className="text-sm text-gray-400 mb-1">Upcoming (7 days)</p>
-          <p className={`text-3xl font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>
+        <div className={`p-4 sm:p-6 rounded-xl border ${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"}`}>
+          <p className="text-xs sm:text-sm text-gray-400 mb-1">Upcoming (7 days)</p>
+          <p className={`text-2xl sm:text-3xl font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>
             {summary.upcoming_renewals_count}
           </p>
         </div>
@@ -79,10 +79,10 @@ export default function AnalyticsPage({ summary, darkMode, savedBySyncroCount = 
 
       {/* Budget Progress */}
       {summary.budget_status.overall_limit && (
-        <div className={`p-6 rounded-xl border ${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"}`}>
-          <div className="flex justify-between items-center mb-4">
+        <div className={`p-4 sm:p-6 rounded-xl border ${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"}`}>
+          <div className="flex flex-wrap justify-between items-center gap-2 mb-4">
             <h3 className={`font-semibold ${darkMode ? "text-white" : "text-gray-900"}`}>Monthly Budget</h3>
-            <span className={darkMode ? "text-gray-400" : "text-gray-600"}>
+            <span className={`text-sm ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
               {formatCurrency(summary.budget_status.current_spend, currency)} / {formatCurrency(summary.budget_status.overall_limit, currency)}
             </span>
           </div>
@@ -94,27 +94,31 @@ export default function AnalyticsPage({ summary, darkMode, savedBySyncroCount = 
       )}
 
       {/* Main Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className={`p-6 rounded-xl border ${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"}`}>
-          <h3 className={`font-semibold mb-6 ${darkMode ? "text-white" : "text-gray-900"}`}>Spending Trend</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={summary.monthly_trend}>
-              <CartesianGrid strokeDasharray="3 3" stroke={darkMode ? "#374151" : "#e5e7eb"} />
-              <XAxis dataKey="month" stroke={darkMode ? "#9ca3af" : "#9ca3af"} />
-              <YAxis stroke={darkMode ? "#9ca3af" : "#9ca3af"} />
-              <Tooltip
-                formatter={(value) => formatCurrency(Number(value), currency)}
-                contentStyle={{ backgroundColor: darkMode ? "#1F2937" : "#FFF", border: "none", borderRadius: "8px" }}
-                itemStyle={{ color: "#6366F1" }}
-              />
-              <Line type="monotone" dataKey="total_spend" stroke="#6366F1" strokeWidth={3} dot={{ fill: "#6366F1", r: 5 }} />
-            </LineChart>
-          </ResponsiveContainer>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8">
+        <div className={`p-4 sm:p-6 rounded-xl border ${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"}`}>
+          <h3 className={`font-semibold mb-4 sm:mb-6 ${darkMode ? "text-white" : "text-gray-900"}`}>Spending Trend</h3>
+          <div className="w-full overflow-x-auto">
+            <div style={{ minWidth: 280 }}>
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart data={summary.monthly_trend}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={darkMode ? "#374151" : "#e5e7eb"} />
+                  <XAxis dataKey="month" stroke={darkMode ? "#9ca3af" : "#9ca3af"} tick={{ fontSize: 11 }} />
+                  <YAxis stroke={darkMode ? "#9ca3af" : "#9ca3af"} tick={{ fontSize: 11 }} width={55} />
+                  <Tooltip
+                    formatter={(value) => formatCurrency(Number(value), currency)}
+                    contentStyle={{ backgroundColor: darkMode ? "#1F2937" : "#FFF", border: "none", borderRadius: "8px" }}
+                    itemStyle={{ color: "#6366F1" }}
+                  />
+                  <Line type="monotone" dataKey="total_spend" stroke="#6366F1" strokeWidth={3} dot={{ fill: "#6366F1", r: 4 }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
         </div>
 
-        <div className={`p-6 rounded-xl border ${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"}`}>
-          <h3 className={`font-semibold mb-6 ${darkMode ? "text-white" : "text-gray-900"}`}>Category Breakdown</h3>
-          <ResponsiveContainer width="100%" height={300}>
+        <div className={`p-4 sm:p-6 rounded-xl border ${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"}`}>
+          <h3 className={`font-semibold mb-4 sm:mb-6 ${darkMode ? "text-white" : "text-gray-900"}`}>Category Breakdown</h3>
+          <ResponsiveContainer width="100%" height={200}>
             <PieChart>
               <Pie
                 data={summary.category_breakdown}
@@ -122,8 +126,8 @@ export default function AnalyticsPage({ summary, darkMode, savedBySyncroCount = 
                 nameKey="category"
                 cx="50%"
                 cy="50%"
-                innerRadius={60}
-                outerRadius={100}
+                innerRadius={50}
+                outerRadius={80}
                 paddingAngle={5}
               >
                 {summary.category_breakdown.map((entry, index) => (
@@ -133,11 +137,11 @@ export default function AnalyticsPage({ summary, darkMode, savedBySyncroCount = 
               <Tooltip formatter={(value) => formatCurrency(Number(value), currency)} />
             </PieChart>
           </ResponsiveContainer>
-          <div className="mt-4 grid grid-cols-2 gap-2">
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-1.5">
             {summary.category_breakdown.map((cat, idx) => (
-              <div key={idx} className="flex items-center gap-2 text-sm">
-                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[idx % COLORS.length] }}></div>
-                <span className="text-gray-400">{cat.category}: {formatCurrency(cat.total_spend, currency)}</span>
+              <div key={idx} className="flex items-center gap-2 text-xs sm:text-sm">
+                <div className="w-2 h-2 flex-shrink-0 rounded-full" style={{ backgroundColor: COLORS[idx % COLORS.length] }}></div>
+                <span className="text-gray-400 truncate">{cat.category}: {formatCurrency(cat.total_spend, currency)}</span>
               </div>
             ))}
           </div>
@@ -160,23 +164,27 @@ export default function AnalyticsPage({ summary, darkMode, savedBySyncroCount = 
       )}
 
       {/* Top Subscriptions */}
-      <div className={`p-6 rounded-xl border ${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"}`}>
-        <h3 className={`font-semibold mb-6 ${darkMode ? "text-white" : "text-gray-900"}`}>Top Subscriptions (Monthly)</h3>
-        <div className="space-y-4">
-          {summary.top_subscriptions.map((sub, idx) => (
-            <div key={idx} className="flex justify-between items-center pb-4 border-b border-gray-700 last:border-0">
-              <div>
-                <p className={`font-medium ${darkMode ? "text-white" : "text-gray-900"}`}>{sub.name}</p>
-                <p className="text-xs text-gray-400">{sub.billing_cycle}</p>
-              </div>
-              <div className="text-right">
-                <p className={`font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>
-                  {formatCurrency(sub.monthly_normalized_price, currency)}
-                </p>
-                <p className="text-xs text-green-600">Active</p>
-              </div>
+      <div className={`p-4 sm:p-6 rounded-xl border ${darkMode ? "bg-[#2D3748] border-[#374151]" : "bg-white border-gray-200"}`}>
+        <h3 className={`font-semibold mb-4 sm:mb-6 ${darkMode ? "text-white" : "text-gray-900"}`}>Top Subscriptions (Monthly)</h3>
+        <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
+          <div className="min-w-[320px]">
+            <div className="space-y-3 sm:space-y-4">
+              {summary.top_subscriptions.map((sub, idx) => (
+                <div key={idx} className="flex justify-between items-center pb-3 sm:pb-4 border-b border-gray-700 last:border-0 gap-4">
+                  <div className="min-w-0">
+                    <p className={`font-medium truncate ${darkMode ? "text-white" : "text-gray-900"}`}>{sub.name}</p>
+                    <p className="text-xs text-gray-400">{sub.billing_cycle}</p>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <p className={`font-bold text-sm sm:text-base ${darkMode ? "text-white" : "text-gray-900"}`}>
+                      {formatCurrency(sub.monthly_normalized_price, currency)}
+                    </p>
+                    <p className="text-xs text-green-600">Active</p>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
+          </div>
         </div>
       </div>
     </div>
