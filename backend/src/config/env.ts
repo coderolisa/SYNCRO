@@ -103,7 +103,11 @@ export const envSchema = z.object({
   EXTERNAL_SERVICE_DEFAULT_RETRIES: z.string().default('3'),
 });
 
-function validateEnv() {
+export type BackendEnv = z.infer<typeof envSchema>;
+
+let cachedEnv: BackendEnv | null = null;
+
+export function validateEnv(): BackendEnv {
   const result = envSchema.safeParse(process.env);
 
   if (!result.success) {
@@ -162,10 +166,19 @@ function validateEnv() {
   }
   // ──────────────────────────────────────────────────────────────────────────
 
+  cachedEnv = data;
   return data;
+}
+
+export function getEnv(): BackendEnv {
+  if (cachedEnv) {
+    return cachedEnv;
+  }
+
+  return validateEnv();
 }
 
 // Skip validation in test environment to avoid requiring all vars in unit tests
 export const env = process.env.NODE_ENV === 'test'
-  ? (process.env as unknown as z.infer<typeof envSchema>)
-  : validateEnv();
+  ? (process.env as unknown as BackendEnv)
+  : getEnv();

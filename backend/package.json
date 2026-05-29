@@ -27,10 +27,11 @@
     "test:rls-audit": "node ../scripts/test-rls-audit.js",
     "check:migrations": "node ../scripts/check-migration-drift.js",
     "db:verify-rollback": "node ../scripts/verify-rollback-safety.js",
-    "db:verify-rollback:group": "node ../scripts/verify-rollback-safety.js --group"
+    "db:verify-rollback:group": "node ../scripts/verify-rollback-safety.js --group",
+    "validate:env": "ts-node scripts/validate-env.ts"
   },
   "dependencies": {
-    "@synchro/shared": "*",
+    "@syncro/shared": "*",
     "@sentry/node": "^10.50.0",
     "@sentry/profiling-node": "^10.50.0",
     "@stellar/stellar-sdk": "^14.5.0",

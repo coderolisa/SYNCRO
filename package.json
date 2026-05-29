@@ -15,7 +15,8 @@
     "typecheck:backend": "npm run typecheck -w backend",
     "typecheck:client": "npm run typecheck -w client",
     "typecheck:sdk": "npm run typecheck -w sdk",
-    "typecheck:shared": "npm run typecheck -w shared"
+    "typecheck:shared": "npm run typecheck -w shared",
+    "generate:openapi": "cd backend && npm run swagger:export"
   },
   "devDependencies": {
     "@types/node": "^25.6.0"
@@ -23,9 +24,5 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.105.0",
     "typescript": "^6.0.3"
-  }
-  ,
-  "scripts": {
-    "generate:openapi": "cd backend && npm run swagger:export"
   }
 }
