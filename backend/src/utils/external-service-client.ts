@@ -4,6 +4,7 @@ import { getServicePolicy, ServicePolicy } from '../config/external-services';
 
 export interface RequestOptions extends RequestInit {
   timeoutMs?: number;
+  maxAttempts?: number;
 }
 
 export interface ServiceMetrics {
@@ -58,6 +59,7 @@ export class ExternalServiceClient {
 
     const timeoutMs = options.timeoutMs || this.policy.timeoutMs;
     const retryPolicy = this.policy.retryPolicy;
+    const maxAttempts = options.maxAttempts || retryPolicy.maxAttempts;
 
     try {
       return await withRetry(async () => {
@@ -100,7 +102,7 @@ export class ExternalServiceClient {
       }, {
         ...retryPolicy,
         // Hook into retry logic to track retries
-        maxAttempts: retryPolicy.maxAttempts,
+        maxAttempts,
       });
     } catch (error) {
       metrics.failedRequests++;
