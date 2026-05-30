@@ -221,6 +221,31 @@ jobs:
           echo "✅ Backend lockfile is up to date"
 
   # ──────────────────────────────────────────────
+  # Job 2b: Validate issue governance (labels, triage policy, templates)
+  # Runs unconditionally — governance files must always be consistent.
+  # Refs: #114, docs/issue-triage-policy.md, .github/labels.yml
+  # ──────────────────────────────────────────────
+  validate-governance:
+    name: Validate Issue Governance
+    runs-on: ubuntu-latest
+    needs: changes
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Validate labels taxonomy, triage policy, and issue templates
+        run: node scripts/check-issue-governance.js
+
+      - name: Run governance unit tests
+        run: node --test scripts/check-issue-governance.test.js
+
+  # ──────────────────────────────────────────────
   # Job 3: Dependency vulnerability scan
   # Blocks PRs with High or Critical vulnerabilities.
   # ──────────────────────────────────────────────
