@@ -14,6 +14,12 @@ vi.mock("../stripe-config", () => ({
   stripeConfig: {},
 }))
 
+vi.mock("../paypal-service", () => ({
+  getPayPalService: vi.fn(),
+}))
+
+import { getPayPalService } from "../paypal-service"
+
 describe("PaymentService", () => {
   let supabase: any
   let stripe: any
@@ -88,22 +94,132 @@ describe("PaymentService", () => {
   })
 
   describe("PayPal Provider", () => {
-    it("should process a successful PayPal payment (mocked) and save to DB", async () => {
-      const service = new PaymentService({ provider: "paypal" })
-      const amount = 50
+    beforeEach(() => {
+      process.env.PAYPAL_CLIENT_ID = "test-client"
+      process.env.PAYPAL_CLIENT_SECRET = "test-secret"
+      process.env.PAYPAL_ENABLED = "true"
+    })
 
-      const result = await service.processPayment(amount, "usd", "paypal_pm_123", { userId: "u1" })
+    it("should create a PayPal order and save pending payment with order ID", async () => {
+      vi.mocked(getPayPalService).mockReturnValue({
+        createOrder: vi.fn().mockResolvedValue({
+          id: "ORDER-123",
+          links: [{ rel: "approve", href: "https://paypal.com/approve/ORDER-123" }],
+        }),
+        captureOrder: vi.fn(),
+        refundCapture: vi.fn(),
+      } as any)
+
+      const service = new PaymentService({ provider: "paypal" })
+      const result = await service.processPayment(50, "usd", "new-order", {
+        userId: "u1",
+        planName: "Pro",
+      })
 
       expect(result.success).toBe(true)
-      expect(result.transactionId).toContain("paypal_")
-      
-      // Verify DB insert
+      expect(result.requiresAction).toBe(true)
+      expect(result.transactionId).toBe("ORDER-123")
       expect(supabase.insert).toHaveBeenCalledWith(
         expect.objectContaining({
-          amount,
+          amount: 50,
           provider: "paypal",
+          status: "pending",
+          transaction_id: "ORDER-123",
+          metadata: expect.objectContaining({
+            provider_transaction_id: "ORDER-123",
+          }),
         })
       )
+    })
+
+    it("should capture an approved PayPal order and finalize DB with capture ID", async () => {
+      const captureOrder = vi.fn().mockResolvedValue({
+        purchase_units: [
+          {
+            payments: {
+              captures: [{ id: "CAPTURE-456", status: "COMPLETED" }],
+            },
+          },
+        ],
+      })
+
+      vi.mocked(getPayPalService).mockReturnValue({
+        createOrder: vi.fn(),
+        captureOrder,
+        refundCapture: vi.fn(),
+      } as any)
+
+      const finalizeSelect = vi.fn().mockResolvedValue({ data: [{ id: "pay-row-1" }], error: null })
+      const finalizeEq2 = vi.fn().mockReturnValue({ select: finalizeSelect })
+      const finalizeEq1 = vi.fn().mockReturnValue({ eq: finalizeEq2 })
+      const finalizeUpdate = vi.fn().mockReturnValue({ eq: finalizeEq1 })
+
+      vi.mocked(createClient).mockResolvedValue({
+        from: vi.fn(() => ({
+          insert: supabase.insert,
+          update: finalizeUpdate,
+        })),
+      } as any)
+
+      const service = new PaymentService({ provider: "paypal" })
+      const result = await service.processPayment(50, "usd", "order_ORDER-123", {
+        userId: "u1",
+        planName: "Pro",
+      })
+
+      expect(result.success).toBe(true)
+      expect(result.transactionId).toBe("CAPTURE-456")
+      expect(captureOrder).toHaveBeenCalledWith("ORDER-123")
+      expect(finalizeUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: "succeeded",
+          transaction_id: "CAPTURE-456",
+          metadata: expect.objectContaining({
+            provider_transaction_id: "CAPTURE-456",
+            paypal_order_id: "ORDER-123",
+          }),
+        })
+      )
+    })
+
+    it("should handle PayPal capture failure and mark payment failed in DB", async () => {
+      vi.mocked(getPayPalService).mockReturnValue({
+        createOrder: vi.fn(),
+        captureOrder: vi.fn().mockResolvedValue({
+          purchase_units: [
+            {
+              payments: {
+                captures: [{ id: "CAPTURE-DECLINED", status: "DECLINED" }],
+              },
+            },
+          ],
+        }),
+        refundCapture: vi.fn(),
+      } as any)
+
+      const service = new PaymentService({ provider: "paypal" })
+      const result = await service.processPayment(50, "usd", "order_ORDER-999", {
+        userId: "u1",
+        planName: "Pro",
+      })
+
+      expect(result.success).toBe(false)
+      expect(supabase.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: "failed",
+        })
+      )
+    })
+
+    it("should fail when PayPal is not configured", async () => {
+      vi.mocked(getPayPalService).mockReturnValue(null)
+
+      const service = new PaymentService({ provider: "paypal" })
+      const result = await service.processPayment(50, "usd", "new-order", { userId: "u1" })
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain("not configured")
+      expect(supabase.insert).not.toHaveBeenCalled()
     })
   })
 

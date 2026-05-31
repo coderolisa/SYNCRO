@@ -79,6 +79,28 @@ describe("PayPal Capture API Route", () => {
     expect(body.error.field).toBe("orderId")
   })
 
+  it("should return error when PayPal capture fails", async () => {
+    mockPaymentService.processPayment.mockResolvedValue({
+      success: false,
+      transactionId: "ORDER-FAIL",
+      error: "Payment capture failed with status: DECLINED",
+    })
+
+    const request = new NextRequest("http://localhost/api/payments/paypal/capture", {
+      method: "POST",
+      body: JSON.stringify({
+        orderId: "ORDER-FAIL",
+        planName: "Pro Plan",
+      }),
+    })
+
+    const response = await POST(request)
+    const body = await response.json()
+
+    expect(response.status).toBeGreaterThanOrEqual(400)
+    expect(body.success).toBe(false)
+  })
+
   it("should reject capture if planName is missing", async () => {
     const invalidBody = {
       orderId: "ORDER-12345",

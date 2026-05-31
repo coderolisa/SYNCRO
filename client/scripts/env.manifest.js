@@ -57,6 +57,7 @@ const optional = [
   'PAYPAL_CLIENT_ID',
   'PAYPAL_CLIENT_SECRET',
   'PAYPAL_MODE',
+  'PAYPAL_ENABLED',
   'ENABLE_MOCK_PAYMENTS',
 
   // System

@@ -60,17 +60,34 @@ export class PaymentService {
         }
       }
 
+      const isPayPalCapture =
+        this.provider === "paypal" && paymentMethodId.startsWith("order_")
+
       if (result.success && !result.requiresAction) {
-        await this.savePaymentToDatabase({
-          amount,
-          currency,
-          status: "succeeded",
-          provider: this.provider,
-          transaction_id: result.transactionId,
-          metadata,
-          user_id: metadata.userId,
-          plan_name: metadata.planName,
-        })
+        if (isPayPalCapture) {
+          const orderId = paymentMethodId.replace("order_", "")
+          await this.finalizePayPalCapture(orderId, result.transactionId, {
+            amount,
+            currency,
+            metadata,
+            user_id: metadata.userId,
+            plan_name: metadata.planName,
+          })
+        } else {
+          await this.savePaymentToDatabase({
+            amount,
+            currency,
+            status: "succeeded",
+            provider: this.provider,
+            transaction_id: result.transactionId,
+            metadata: {
+              ...metadata,
+              provider_transaction_id: result.transactionId,
+            },
+            user_id: metadata.userId,
+            plan_name: metadata.planName,
+          })
+        }
       } else if (result.requiresAction) {
         // Save as pending for PayPal orders that need user approval
         await this.savePaymentToDatabase({
@@ -79,9 +96,20 @@ export class PaymentService {
           status: "pending",
           provider: this.provider,
           transaction_id: result.transactionId,
-          metadata,
+          metadata: {
+            ...metadata,
+            paypal_order_id: result.transactionId,
+            provider_transaction_id: result.transactionId,
+          },
           user_id: metadata.userId,
           plan_name: metadata.planName,
+        })
+      } else if (isPayPalCapture && result.transactionId) {
+        const orderId = paymentMethodId.replace("order_", "")
+        await this.markPaymentFailed(orderId, result.error, {
+          ...metadata,
+          paypal_order_id: orderId,
+          provider_transaction_id: result.transactionId,
         })
       }
 
@@ -234,6 +262,89 @@ export class PaymentService {
       console.error("Failed to save payment to database:", error)
       // We don't want to fail the whole payment if only the logging fails,
       // but ideally this should be handled by webhooks anyway.
+    }
+  }
+
+  /**
+   * After PayPal capture, upgrade the pending order row to succeeded with the capture ID.
+   */
+  private async finalizePayPalCapture(
+    orderId: string,
+    captureId: string,
+    paymentData: {
+      amount: number
+      currency: string
+      metadata: Record<string, unknown>
+      user_id?: string
+      plan_name?: string
+    }
+  ) {
+    try {
+      const supabase = await createClient()
+      const { data, error } = await supabase
+        .from("payments")
+        .update({
+          status: "succeeded",
+          transaction_id: captureId,
+          amount: paymentData.amount || undefined,
+          currency: paymentData.currency,
+          metadata: {
+            ...paymentData.metadata,
+            paypal_order_id: orderId,
+            provider_transaction_id: captureId,
+          },
+          updated_at: new Date().toISOString(),
+        })
+        .eq("transaction_id", orderId)
+        .eq("provider", "paypal")
+        .select("id")
+
+      if (error) throw error
+
+      if (!data?.length) {
+        await this.savePaymentToDatabase({
+          amount: paymentData.amount,
+          currency: paymentData.currency,
+          status: "succeeded",
+          provider: "paypal",
+          transaction_id: captureId,
+          metadata: {
+            ...paymentData.metadata,
+            paypal_order_id: orderId,
+            provider_transaction_id: captureId,
+          },
+          user_id: paymentData.user_id,
+          plan_name: paymentData.plan_name,
+        })
+      }
+    } catch (error) {
+      console.error("Failed to finalize PayPal capture in database:", error)
+    }
+  }
+
+  private async markPaymentFailed(
+    orderId: string,
+    failureReason?: string,
+    metadata: Record<string, unknown> = {}
+  ) {
+    try {
+      const supabase = await createClient()
+      const { error } = await supabase
+        .from("payments")
+        .update({
+          status: "failed",
+          metadata: {
+            ...metadata,
+            failure_reason: failureReason || "PayPal capture failed",
+          },
+          updated_at: new Date().toISOString(),
+        })
+        .eq("transaction_id", orderId)
+        .eq("provider", "paypal")
+
+      if (error) throw error
+    } catch (error) {
+      console.error("Failed to mark PayPal payment as failed:", error)
     }
   }
 

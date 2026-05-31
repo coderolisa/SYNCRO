@@ -1,9 +1,23 @@
 /**
  * PayPal Payment Service
  * Implements PayPal Orders API v2 for payment processing
- * 
+ *
  * @see https://developer.paypal.com/docs/api/orders/v2/
  */
+
+import { isPayPalExplicitlyEnabled } from './feature-flags'
+
+const PAYPAL_MAX_RETRIES = 3
+const PAYPAL_INITIAL_RETRY_DELAY_MS = 500
+const PAYPAL_RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504])
+
+function isRetryablePayPalStatus(status: number): boolean {
+    return PAYPAL_RETRYABLE_STATUS_CODES.has(status)
+}
+
+async function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 export interface PayPalConfig {
     clientId: string
@@ -54,6 +68,47 @@ export class PayPalService {
     }
 
     /**
+     * Execute PayPal API requests with exponential backoff on transient failures.
+     */
+    private async fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+        let lastError: unknown
+
+        for (let attempt = 0; attempt < PAYPAL_MAX_RETRIES; attempt++) {
+            try {
+                const response = await fetch(url, init)
+
+                if (
+                    response.ok ||
+                    !isRetryablePayPalStatus(response.status) ||
+                    attempt === PAYPAL_MAX_RETRIES - 1
+                ) {
+                    return response
+                }
+
+                console.warn(
+                    `[PayPalService] Retryable HTTP ${response.status} on ${url} (attempt ${attempt + 1}/${PAYPAL_MAX_RETRIES})`
+                )
+            } catch (error) {
+                lastError = error
+                if (attempt === PAYPAL_MAX_RETRIES - 1) {
+                    throw error
+                }
+                console.warn(
+                    `[PayPalService] Network error on ${url} (attempt ${attempt + 1}/${PAYPAL_MAX_RETRIES}):`,
+                    error
+                )
+            }
+
+            const delay = PAYPAL_INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt)
+            await sleep(delay)
+        }
+
+        throw lastError instanceof Error
+            ? lastError
+            : new Error('PayPal API request failed after retries')
+    }
+
+    /**
      * Get OAuth access token for PayPal API
      */
     private async getAccessToken(): Promise<string> {
@@ -65,7 +120,7 @@ export class PayPalService {
         try {
             const auth = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64')
 
-            const response = await fetch(`${this.baseUrl}/v1/oauth2/token`, {
+            const response = await this.fetchWithRetry(`${this.baseUrl}/v1/oauth2/token`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Basic ${auth}`,
@@ -127,7 +182,7 @@ export class PayPalService {
                 },
             }
 
-            const response = await fetch(`${this.baseUrl}/v2/checkout/orders`, {
+            const response = await this.fetchWithRetry(`${this.baseUrl}/v2/checkout/orders`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${accessToken}`,
@@ -159,13 +214,16 @@ export class PayPalService {
         try {
             const accessToken = await this.getAccessToken()
 
-            const response = await fetch(`${this.baseUrl}/v2/checkout/orders/${orderId}/capture`, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json',
-                },
-            })
+            const response = await this.fetchWithRetry(
+                `${this.baseUrl}/v2/checkout/orders/${orderId}/capture`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${accessToken}`,
+                        'Content-Type': 'application/json',
+                    },
+                }
+            )
 
             if (!response.ok) {
                 const error = await response.json()
@@ -190,7 +248,7 @@ export class PayPalService {
         try {
             const accessToken = await this.getAccessToken()
 
-            const response = await fetch(`${this.baseUrl}/v2/checkout/orders/${orderId}`, {
+            const response = await this.fetchWithRetry(`${this.baseUrl}/v2/checkout/orders/${orderId}`, {
                 method: 'GET',
                 headers: {
                     'Authorization': `Bearer ${accessToken}`,
@@ -225,7 +283,7 @@ export class PayPalService {
                 }
             }
 
-            const response = await fetch(
+            const response = await this.fetchWithRetry(
                 `${this.baseUrl}/v2/payments/captures/${captureId}/refund`,
                 {
                     method: 'POST',
@@ -258,6 +316,11 @@ export class PayPalService {
  * Get PayPal service instance
  */
 export function getPayPalService(): PayPalService | null {
+    if (!isPayPalExplicitlyEnabled()) {
+        console.warn('[PayPalService] PayPal is explicitly disabled (PAYPAL_ENABLED=false)')
+        return null
+    }
+
     const clientId = process.env.PAYPAL_CLIENT_ID
     const clientSecret = process.env.PAYPAL_CLIENT_SECRET
     const mode = (process.env.PAYPAL_MODE || 'sandbox') as 'sandbox' | 'live'

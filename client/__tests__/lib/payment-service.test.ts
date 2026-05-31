@@ -233,6 +233,22 @@ describe('PaymentService', () => {
             expect(result.success).toBe(false)
             expect(result.error).toContain('not configured')
         })
+
+        it('should reject PayPal when explicitly disabled via PAYPAL_ENABLED=false', async () => {
+            process.env.PAYPAL_CLIENT_ID = 'test-client-id'
+            process.env.PAYPAL_CLIENT_SECRET = 'test-secret'
+            process.env.PAYPAL_ENABLED = 'false'
+
+            const service = new PaymentService({ provider: 'paypal' })
+            const result = await service.processPayment(100, 'USD', 'new-order', {
+                userId: 'user-123',
+                planName: 'Pro',
+            })
+
+            expect(result.success).toBe(false)
+            expect(result.error).toContain('not enabled')
+        })
+
     })
 
     describe('Refund Processing', () => {

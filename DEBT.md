@@ -42,7 +42,6 @@ Adjust this list in `scripts/check-todos.mjs` (`CRITICAL_PATHS`) and here togeth
 
 | Issue | Location | Severity | Owner | Description | Added |
 |-------|----------|----------|-------|-------------|-------|
-| #496 | `client/app/api/csp-report/route.ts` | high | _unassigned_ | Replace stubbed PayPal integration with real client | 2026-05-29 |
 | #494 | `backend/...` | med | _unassigned_ | Price changes / consolidation suggestions fetched from DB | 2026-05-29 |
 
 > The rows above are seeded from existing issue summaries (`ISSUE_496_*`,

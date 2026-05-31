@@ -36,14 +36,26 @@ function isMockPaymentsAllowed(): boolean {
 }
 
 /**
+ * PayPal can be turned off explicitly via PAYPAL_ENABLED=false even when credentials exist.
+ * Defaults to enabled when credentials are present.
+ */
+export function isPayPalExplicitlyEnabled(): boolean {
+    const explicit = process.env.PAYPAL_ENABLED?.trim().toLowerCase()
+    if (explicit === 'false' || explicit === '0' || explicit === 'no') {
+        return false
+    }
+    return true
+}
+
+/**
  * Get feature flags from environment variables
  */
 export function getFeatureFlags(): FeatureFlags {
     const blockchain: BlockchainFlags = getBlockchainFlags();
 
     return {
-        // PayPal is enabled if credentials are configured
-        paypalEnabled: !!(
+        // PayPal requires credentials and must not be explicitly disabled
+        paypalEnabled: isPayPalExplicitlyEnabled() && !!(
             process.env.PAYPAL_CLIENT_ID &&
             process.env.PAYPAL_CLIENT_SECRET
         ),
